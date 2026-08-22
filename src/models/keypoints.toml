@@ -1,0 +1,93 @@
+# Keypoint layouts.
+#
+# Each table maps canonical joint names to the index a model emits them at.
+# A canonical joint a model does not provide is simply left out.
+
+# COCO 17 keypoints. No feet, so foot orientation has to be guessed from the
+# shin direction, which is noticeably worse than having heel and toe points.
+[coco17]
+count = 17
+
+[coco17.joints]
+nose = 0
+left_eye = 1
+right_eye = 2
+left_ear = 3
+right_ear = 4
+left_shoulder = 5
+right_shoulder = 6
+left_elbow = 7
+right_elbow = 8
+left_wrist = 9
+right_wrist = 10
+left_hip = 11
+right_hip = 12
+left_knee = 13
+right_knee = 14
+left_ankle = 15
+right_ankle = 16
+
+# Halpe 26: COCO 17 plus head, neck, a pelvis point, and both feet. This is the
+# best fit for lower-body tracking, since it carries the foot points without the
+# cost of a 133 keypoint whole-body model.
+[halpe26]
+count = 26
+
+[halpe26.joints]
+nose = 0
+left_eye = 1
+right_eye = 2
+left_ear = 3
+right_ear = 4
+left_shoulder = 5
+right_shoulder = 6
+left_elbow = 7
+right_elbow = 8
+left_wrist = 9
+right_wrist = 10
+left_hip = 11
+right_hip = 12
+left_knee = 13
+right_knee = 14
+left_ankle = 15
+right_ankle = 16
+head = 17
+neck = 18
+hip = 19
+left_big_toe = 20
+right_big_toe = 21
+left_small_toe = 22
+right_small_toe = 23
+left_heel = 24
+right_heel = 25
+
+# COCO-WholeBody 133: body, feet, face and hands. Only the body and foot points
+# are mapped; the face and hand points cost inference time without helping
+# lower-body tracking.
+[coco_wholebody133]
+count = 133
+
+[coco_wholebody133.joints]
+nose = 0
+left_eye = 1
+right_eye = 2
+left_ear = 3
+right_ear = 4
+left_shoulder = 5
+right_shoulder = 6
+left_elbow = 7
+right_elbow = 8
+left_wrist = 9
+right_wrist = 10
+left_hip = 11
+right_hip = 12
+left_knee = 13
+right_knee = 14
+left_ankle = 15
+right_ankle = 16
+left_big_toe = 17
+left_small_toe = 18
+left_heel = 19
+right_big_toe = 20
+right_small_toe = 21
+right_heel = 22

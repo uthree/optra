@@ -1,0 +1,169 @@
+# Optra's model catalogue.
+#
+# Only Apache-2.0 and MIT models are listed; anything else is rejected at load
+# time. The models are the ones surveyed in PINTO's model zoo, but they are
+# fetched from their upstream publishers: the zoo distributes every conversion
+# of a model in one archive, and those archives run to several gigabytes for a
+# single ONNX file. The `zoo` field records the corresponding zoo entry.
+#
+# Checksums and sizes were observed on 2026-08-23. A `tar_gz` source is
+# supported, so a zoo archive can still be used directly by adding an entry to
+# the user manifest.
+
+manifest_version = 1
+
+# --- Detectors --------------------------------------------------------------
+
+[[model]]
+id = "yolox-tiny-humanart-416"
+name = "YOLOX-tiny (HumanArt)"
+kind = "detector"
+arch = "mmdet_end2end"
+license = "Apache-2.0"
+license_url = "https://github.com/Megvii-BaseDetection/YOLOX/blob/main/LICENSE"
+zoo = "132_YOLOX"
+notes = "Person detection only, with NMS inside the graph. The default: a ceiling camera sees one slowly moving person, so detection accuracy is not the bottleneck."
+
+[model.source]
+kind = "zip"
+url = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip"
+sha256 = "36e09ca555916253fa1b5d51bec01e48e98e1f0af966c51ce3e844d8c8fc4cfc"
+size = 18887737
+
+[model.input]
+name = "input"
+width = 416
+height = 416
+color = "bgr"
+mean = [0.0, 0.0, 0.0]
+std = [1.0, 1.0, 1.0]
+resize = { kind = "letterbox", pad = 114 }
+
+[model.output]
+tensors = ["dets", "labels"]
+
+[[model]]
+id = "yolox-s-humanart-640"
+name = "YOLOX-s (HumanArt)"
+kind = "detector"
+arch = "mmdet_end2end"
+license = "Apache-2.0"
+license_url = "https://github.com/Megvii-BaseDetection/YOLOX/blob/main/LICENSE"
+zoo = "132_YOLOX"
+notes = "More robust on steep ceiling views and partial occlusion, at roughly twice the cost of the tiny model."
+
+[model.source]
+kind = "zip"
+url = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_s_8xb8-300e_humanart-3ef259a7.zip"
+sha256 = "e8e8f51cb9c70ed1c3781ed12f1debf918d78cf94638554f1a467f704f627349"
+size = 33431899
+
+[model.input]
+name = "input"
+width = 640
+height = 640
+color = "bgr"
+mean = [0.0, 0.0, 0.0]
+std = [1.0, 1.0, 1.0]
+resize = { kind = "letterbox", pad = 114 }
+
+[model.output]
+tensors = ["dets", "labels"]
+
+# --- 2D pose ----------------------------------------------------------------
+
+[[model]]
+id = "rtmpose-m-halpe26-256x192"
+name = "RTMPose-m (Halpe 26)"
+kind = "pose2d"
+arch = "simcc"
+license = "Apache-2.0"
+license_url = "https://github.com/open-mmlab/mmpose/blob/main/LICENSE"
+zoo = "393_RTMPose_WholeBody"
+notes = "The default. 26 keypoints including heels and toes, which is what makes real foot orientation possible, without the cost of a 133 keypoint whole-body model."
+
+[model.source]
+kind = "zip"
+url = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605.zip"
+sha256 = "55b81170e236040b59fc792ad0a8315301ac4c079a3bdb1095d838aad3088d18"
+size = 52089522
+
+[model.input]
+name = "input"
+width = 192
+height = 256
+color = "rgb"
+mean = [123.675, 116.28, 103.53]
+std = [58.395, 57.12, 57.375]
+resize = { kind = "affine_crop", padding = 1.25 }
+
+[model.output]
+tensors = ["simcc_x", "simcc_y"]
+keypoints = "halpe26"
+
+[model.decoder]
+split_ratio = 2.0
+
+[[model]]
+id = "rtmpose-t-halpe26-256x192"
+name = "RTMPose-t (Halpe 26)"
+kind = "pose2d"
+arch = "simcc"
+license = "Apache-2.0"
+license_url = "https://github.com/open-mmlab/mmpose/blob/main/LICENSE"
+zoo = "393_RTMPose_WholeBody"
+notes = "Same keypoints as the default at a quarter of the size, for machines that need the headroom or setups running four cameras."
+
+[model.source]
+kind = "zip"
+url = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7-halpe26_700e-256x192-6020f8a6_20230605.zip"
+sha256 = "de5fa6ef754e1b19a0f8199d53affef122813e30c580c48be87fcf86c4ec47a7"
+size = 13179169
+
+[model.input]
+name = "input"
+width = 192
+height = 256
+color = "rgb"
+mean = [123.675, 116.28, 103.53]
+std = [58.395, 57.12, 57.375]
+resize = { kind = "affine_crop", padding = 1.25 }
+
+[model.output]
+tensors = ["simcc_x", "simcc_y"]
+keypoints = "halpe26"
+
+[model.decoder]
+split_ratio = 2.0
+
+[[model]]
+id = "rtmpose-m-wholebody133-256x192"
+name = "RTMPose-m (COCO-WholeBody 133)"
+kind = "pose2d"
+arch = "simcc"
+license = "Apache-2.0"
+license_url = "https://github.com/open-mmlab/mmpose/blob/main/LICENSE"
+zoo = "393_RTMPose_WholeBody"
+notes = "Whole-body keypoints. Only the body and foot points are used, so this mainly costs inference time here; kept for comparison against the Halpe model."
+
+[model.source]
+kind = "zip"
+url = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-ucoco_dw-ucoco_270e-256x192-c8b76419_20230728.zip"
+sha256 = "a4e4d56e9dc043e2171c73f5918f334509a47fde60182c1961370c7160334ac0"
+size = 66976066
+
+[model.input]
+name = "input"
+width = 192
+height = 256
+color = "rgb"
+mean = [123.675, 116.28, 103.53]
+std = [58.395, 57.12, 57.375]
+resize = { kind = "affine_crop", padding = 1.25 }
+
+[model.output]
+tensors = ["simcc_x", "simcc_y"]
+keypoints = "coco_wholebody133"
+
+[model.decoder]
+split_ratio = 2.0

@@ -8,5 +8,6 @@ pub mod capture;
 pub mod config;
 pub mod infer;
 pub mod logging;
+pub mod models;
 pub mod paths;
 pub mod worker;
