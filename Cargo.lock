@@ -1204,6 +1204,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2129,6 +2131,7 @@ dependencies = [
  "eframe",
  "egui",
  "flate2",
+ "image",
  "nokhwa",
  "ort",
  "parking_lot",
