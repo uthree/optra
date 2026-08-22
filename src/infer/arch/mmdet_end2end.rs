@@ -52,10 +52,6 @@ impl MmdetEnd2End {
         })
     }
 
-    pub fn backend(&self) -> crate::infer::session::Backend {
-        self.handle.backend
-    }
-
     fn prepare(&self, image: &ImageView<'_>) -> Result<(Vec<f32>, Mapping)> {
         let input = match self.spec.input.resize {
             ResizeMode::Letterbox { pad } => preprocess::letterbox(image, &self.spec.input, pad),
@@ -71,6 +67,10 @@ impl MmdetEnd2End {
 }
 
 impl Detector for MmdetEnd2End {
+    fn backend(&self) -> crate::infer::Backend {
+        self.handle.backend
+    }
+
     fn detect(&mut self, images: &[ImageView<'_>]) -> Result<Vec<Vec<Detection>>> {
         let mut results = Vec::with_capacity(images.len());
 

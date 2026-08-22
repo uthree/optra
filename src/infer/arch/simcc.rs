@@ -61,10 +61,6 @@ impl Simcc {
         })
     }
 
-    pub fn backend(&self) -> crate::infer::session::Backend {
-        self.handle.backend
-    }
-
     pub fn layout(&self) -> &'static Layout {
         self.layout
     }
@@ -83,6 +79,10 @@ impl Simcc {
 }
 
 impl Pose2d for Simcc {
+    fn backend(&self) -> crate::infer::Backend {
+        self.handle.backend
+    }
+
     fn estimate(&mut self, people: &[(ImageView<'_>, Detection)]) -> Result<Vec<Keypoints2d>> {
         if people.is_empty() {
             return Ok(Vec::new());

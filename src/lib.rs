@@ -10,4 +10,5 @@ pub mod infer;
 pub mod logging;
 pub mod models;
 pub mod paths;
+pub mod pipeline;
 pub mod worker;

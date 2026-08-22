@@ -516,6 +516,7 @@ fn source_summary(source: &SourceConfig) -> String {
         SourceConfig::Synthetic { seat } => {
             format!("synthetic scene, ceiling corner {}", seat + 1)
         }
+        SourceConfig::Still { path } => format!("still image, {path}"),
     }
 }
 

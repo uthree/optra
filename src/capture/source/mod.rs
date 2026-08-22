@@ -7,6 +7,7 @@
 
 #[cfg(windows)]
 pub mod controls;
+pub mod still;
 pub mod synthetic;
 #[cfg(windows)]
 pub mod webcam;
@@ -86,7 +87,7 @@ pub trait ControlSession {
 /// support one. A synthetic source has no properties to control.
 pub fn open_controls(config: &CameraConfig) -> Option<Box<dyn ControlSession>> {
     match &config.source {
-        SourceConfig::Synthetic { .. } => None,
+        SourceConfig::Synthetic { .. } | SourceConfig::Still { .. } => None,
         #[cfg(windows)]
         SourceConfig::Webcam { device_path, .. } => {
             match controls::DeviceControls::open(device_path) {
@@ -111,6 +112,10 @@ pub fn open(config: &CameraConfig) -> Result<Box<dyn FrameSource>> {
         SourceConfig::Synthetic { seat } => {
             Ok(Box::new(synthetic::SyntheticSource::new(config, *seat)))
         }
+        SourceConfig::Still { path } => Ok(Box::new(still::StillSource::open(
+            config,
+            std::path::Path::new(path),
+        )?)),
         #[cfg(windows)]
         SourceConfig::Webcam {
             device_path,

@@ -15,6 +15,7 @@ pub mod camera;
 pub use camera::{CameraConfig, ControlName, ControlSetting, LensKind, Rotation, SourceConfig};
 
 use crate::app::panels::Panel;
+use crate::infer::ProviderChoice;
 use crate::paths;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -23,6 +24,7 @@ pub struct Config {
     pub window: WindowConfig,
     pub ui: UiConfig,
     pub capture: CaptureConfig,
+    pub inference: InferenceConfig,
     pub cameras: Vec<CameraConfig>,
 }
 
@@ -176,5 +178,33 @@ impl Config {
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("failed to replace {}", path.display()))?;
         Ok(())
+    }
+}
+
+/// Settings for the inference stage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InferenceConfig {
+    pub enabled: bool,
+    /// Execution provider requested for every model.
+    pub provider: ProviderChoice,
+    /// Detector used by cameras that do not name their own.
+    pub detector_model: String,
+    /// Pose model used by cameras that do not name their own.
+    pub pose_model: String,
+    /// Frames to skip between detector runs. The subject is one slowly moving
+    /// person, so detecting every frame buys little and costs a lot.
+    pub detect_every: u32,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: ProviderChoice::default(),
+            detector_model: "yolox-tiny-humanart-416".to_owned(),
+            pose_model: "rtmpose-m-halpe26-256x192".to_owned(),
+            detect_every: 5,
+        }
     }
 }

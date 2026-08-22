@@ -24,6 +24,10 @@ pub struct CameraConfig {
     pub rotation: Rotation,
     /// Device properties to apply when the camera opens.
     pub controls: Vec<ControlSetting>,
+    /// Detector for this camera, or the shared default when absent.
+    pub detector_model: Option<String>,
+    /// Pose model for this camera, or the shared default when absent.
+    pub pose_model: Option<String>,
 }
 
 impl CameraConfig {
@@ -146,6 +150,8 @@ impl Default for CameraConfig {
             lens: LensKind::Standard,
             rotation: Rotation::None,
             controls: Vec::new(),
+            detector_model: None,
+            pose_model: None,
         }
     }
 }
@@ -165,6 +171,9 @@ pub enum SourceConfig {
         /// Which corner of the virtual room this camera sits in.
         seat: u32,
     },
+    /// A still image replayed at the configured frame rate, for testing the
+    /// stages downstream against a known scene.
+    Still { path: String },
 }
 
 impl Default for SourceConfig {

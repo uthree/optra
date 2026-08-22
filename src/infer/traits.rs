@@ -137,6 +137,10 @@ impl Keypoints2d {
 pub trait Detector: Send {
     /// Detects in each image. The outer vector matches `images`.
     fn detect(&mut self, images: &[ImageView<'_>]) -> Result<Vec<Vec<Detection>>>;
+
+    /// Which execution provider this model actually ended up on. A silent
+    /// demotion to CPU is the difference between tracking and not.
+    fn backend(&self) -> crate::infer::Backend;
 }
 
 /// Produces keypoints for cropped people.
@@ -144,6 +148,8 @@ pub trait Pose2d: Send {
     /// Estimates keypoints for each `(image, box)` pair. The result matches the
     /// input order.
     fn estimate(&mut self, people: &[(ImageView<'_>, Detection)]) -> Result<Vec<Keypoints2d>>;
+
+    fn backend(&self) -> crate::infer::Backend;
 }
 
 #[cfg(test)]
