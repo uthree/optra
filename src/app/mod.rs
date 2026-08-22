@@ -9,6 +9,7 @@ use egui::RichText;
 use crate::capture::CaptureManager;
 use crate::config::Config;
 use crate::logging::LogBuffer;
+use crate::pipeline::Pipeline;
 use crate::worker::{Supervisor, WorkerEvent};
 use panels::{Panel, PanelContext};
 
@@ -20,6 +21,7 @@ pub struct OptraApp {
     log: LogBuffer,
     supervisor: Supervisor,
     capture: CaptureManager,
+    pipeline: Pipeline,
 
     cameras: panels::cameras::CamerasPanel,
     models: panels::models::ModelsPanel,
@@ -38,9 +40,18 @@ impl OptraApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, config: Config, log: LogBuffer) -> Self {
         let mut supervisor = Supervisor::new();
         let mut capture = CaptureManager::default();
+        let mut pipeline = Pipeline::default();
 
         if config.capture.auto_start && config.cameras.iter().any(|camera| camera.enabled) {
             capture.start(&config.cameras, &mut supervisor);
+            if config.inference.enabled {
+                pipeline.start(
+                    config.inference.clone(),
+                    &config.cameras,
+                    capture.channels(),
+                    &mut supervisor,
+                );
+            }
         }
 
         Self {
@@ -48,6 +59,7 @@ impl OptraApp {
             log,
             supervisor,
             capture,
+            pipeline,
             cameras: Default::default(),
             models: Default::default(),
             calibration: Default::default(),
@@ -206,6 +218,7 @@ impl eframe::App for OptraApp {
                 log: &self.log,
                 supervisor: &mut self.supervisor,
                 capture: &mut self.capture,
+                pipeline: &mut self.pipeline,
                 dirty: false,
             };
 
@@ -229,6 +242,7 @@ impl eframe::App for OptraApp {
 
     fn on_exit(&mut self) {
         // Cameras first: their threads are the ones the supervisor waits on.
+        self.pipeline.stop();
         self.capture.stop();
         self.supervisor.shutdown();
         self.dirty_since.get_or_insert_with(Instant::now);

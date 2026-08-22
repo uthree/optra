@@ -289,11 +289,14 @@ ONNX input/output binding, and the decoder. The initial set:
 
 | Adapter | Covers | Decoder |
 |---|---|---|
-| `yolox` | YOLOX and its Wholebody variants | Anchor-free grid decode + NMS |
-| `rtdetr` | RT-DETRv2 | Direct query output, no NMS |
+| `mmdet_end2end` | Detectors exported by mmdeploy, including the YOLOX family | None: the graph emits boxes that have already been through NMS |
 | `simcc` | RTMPose family | SimCC 1D classification per axis |
 | `heatmap` | ViTPose, HRNet-style top-down models | Argmax + quadratic sub-pixel refinement |
 | `movenet` | MoveNet single and multi pose | Centre/offset field decode |
+| `yolox_raw` | YOLOX exported without postprocessing | Anchor-free grid decode + NMS |
+
+The first two are implemented; the rest are the shapes the interface was drawn
+to fit.
 
 Adapters are registered by name:
 
@@ -313,29 +316,37 @@ with a local path and a matching `arch` is enough, with no rebuild.
 
 ### 7.2 Model catalogue
 
-Models come from [PINTO_model_zoo](https://github.com/PINTO0309/PINTO_model_zoo)
-and are restricted to Apache-2.0 or MIT upstream licenses. Notably this excludes
-the YOLOv9-based Wholebody detectors, whose upstream is GPL-3.0.
+Models are restricted to Apache-2.0 or MIT upstream licenses, enforced at load
+time. Notably this excludes the YOLOv9-based Wholebody detectors, whose upstream
+is GPL-3.0.
 
-Detection candidates:
+The models were surveyed in
+[PINTO_model_zoo](https://github.com/PINTO0309/PINTO_model_zoo), but they are
+fetched from their upstream publishers instead of from the zoo. The zoo
+distributes every conversion of a model in a single archive: 0.8 GB for YOLOX
+tiny, 3.7 GB for RTMPose WholeBody. Downloading gigabytes to extract one ONNX
+file is not a reasonable thing to ask, so each catalogue entry records its zoo
+entry in a `zoo` field and points its download at the publisher. A `tar_gz`
+source is supported, so any zoo archive can still be used by adding an entry to
+the user manifest.
 
-| Zoo entry | Upstream | License | Why |
+Shipped catalogue:
+
+| Model | Kind | Upstream | Why |
 |---|---|---|---|
-| `132_YOLOX` | Megvii YOLOX | Apache-2.0 | Baseline person detector, many input sizes. |
-| `449_YOLOX-WholeBody12` | YOLOX | Apache-2.0 | Body/head/hand/foot classes in one pass. |
-| `460_RT-DETRv2-Wholebody25` | RT-DETRv2 | Apache-2.0 | NMS-free, stronger on crowded or unusual viewpoints. |
+| YOLOX-tiny (HumanArt) | Detector | Megvii YOLOX, Apache-2.0 | **Default.** Person-only detection with NMS inside the graph. A ceiling camera sees one slowly moving person, so detection is not the bottleneck. |
+| YOLOX-s (HumanArt) | Detector | Megvii YOLOX, Apache-2.0 | More robust on steep views and partial occlusion, at roughly twice the cost. |
+| RTMPose-m (Halpe 26) | 2D pose | MMPose, Apache-2.0 | **Default.** 26 keypoints including heels and toes. |
+| RTMPose-t (Halpe 26) | 2D pose | MMPose, Apache-2.0 | The same keypoints at a quarter of the size, for four-camera setups. |
+| RTMPose-m (COCO-WholeBody 133) | 2D pose | MMPose, Apache-2.0 | Whole-body keypoints, kept for comparison. |
 
-2D pose candidates:
+The default pose model is Halpe 26 rather than the 133-point whole-body model:
+both carry the heel and toe points that foot orientation needs, and the extra
+107 face and hand keypoints cost inference time that lower-body tracking never
+reads.
 
-| Zoo entry | Upstream | License | Why |
-|---|---|---|---|
-| `393_RTMPose_WholeBody` | MMPose RTMPose | Apache-2.0 | **Default.** COCO-WholeBody 133 keypoints, including heel and toe points, which is what makes real foot orientation possible. |
-| `440_ViTPose` | ViTPose | Apache-2.0 | Highest accuracy option for users with GPU headroom. |
-| `115_MoveNet` | Google MoveNet | Apache-2.0 | Lightweight single-person path, detector-free. |
-| `137_MoveNet_MultiPose` | Google MoveNet | Apache-2.0 | Single-pass multi-person, useful as a low-end fallback. |
-
-Every candidate's upstream license is re-verified at the time it is added to the
-manifest, and the exact statement is recorded in `models/manifest.toml`:
+Every entry's upstream license is verified when it is added, and recorded in the
+manifest:
 
 ```toml
 manifest_version = 1

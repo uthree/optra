@@ -240,6 +240,9 @@ fn run(mut worker: Worker) {
 
         set.poll();
 
+        let (wanted_detectors, wanted_poses) = assigned_models(&worker);
+        set.ensure(&wanted_detectors, &wanted_poses);
+
         let mut worked = false;
         for source in &worker.sources {
             let camera = match worker
@@ -287,8 +290,7 @@ fn run(mut worker: Worker) {
 
         // Models nobody is assigned to any more are dropped, so a swap frees
         // the memory of the model it replaced.
-        let (detectors, poses) = assigned_models(&worker);
-        set.retain(&detectors, &poses);
+        set.retain(&wanted_detectors, &wanted_poses);
 
         if !worked {
             // Nothing new to do; yield rather than spin. A camera at 30 fps

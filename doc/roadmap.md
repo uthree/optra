@@ -8,8 +8,8 @@ these steps build toward.
 |---|---|
 | M0 - Project skeleton | done |
 | M1 - Camera capture | done |
-| M2 - Inference | next |
-| M3 - VR link and calibration | |
+| M2 - Inference | done |
+| M3 - VR link and calibration | next |
 | M4 - Fusion | |
 | M5 - Tracker output | |
 | M6 - Tuning and release | |
@@ -60,21 +60,39 @@ Two findings from this milestone changed the design, both recorded in
 - Model registry: `manifest.toml` and model spec parsing, download with
   progress, SHA-256 verification, license display and gate, graph validation
   against the declared tensors.
-- `Detector` / `Pose2d` / `MultiPose2d` traits and the architecture adapter
-  registry. First adapters: `yolox` and `simcc`, then `heatmap`, `movenet`,
-  `rtdetr`.
-- Batching grouped by model, per-camera model assignment and inference stride.
+- `Detector` and `Pose2d` traits and the architecture adapter registry, with the
+  `mmdet_end2end` and `simcc` adapters.
+- Per-camera model assignment and a detector stride, with the box carried by the
+  previous keypoints between detector runs.
 - Canonical keypoint mapping driven by `keypoints.toml`, covering COCO-17,
-  COCO-WholeBody-133 and MoveNet-17.
-- Runtime model swap: background session build and warm-up, atomic replace.
-- Model panel with per-model benchmark (ms/frame, achieved FPS) and local ONNX
-  registration.
+  Halpe-26 and COCO-WholeBody-133.
+- Runtime model swap: background session build and warm-up, and a camera keeps
+  its current model until the replacement is ready.
+- Model panel: catalogue with license badges, install progress, execution
+  provider and default model selection.
 - Keypoint overlay on the camera previews.
+- A still-image source, so the stages downstream can be tested against a known
+  scene.
 
 **Done when:** all cameras show live 2D skeletons, each camera can run a
 different model, and swapping a model at runtime neither blocks the UI nor
 interrupts tracking. Adding a new checkpoint of a supported architecture
 requires editing only the manifest.
+
+What this milestone found:
+
+- PINTO's model zoo publishes every conversion of a model in one archive, which
+  runs to gigabytes for a single ONNX file. The catalogue therefore fetches the
+  same models from their upstream publishers and records the zoo entry
+  alongside. See [design.md](design.md).
+- Halpe 26 replaced the 133-point whole-body model as the default: it carries
+  the same heel and toe points without the face and hand keypoints.
+- Only the `mmdet_end2end` and `simcc` adapters were needed for the shipped
+  catalogue; the others in the design remain unwritten until a model needs them.
+
+Left for later: a per-model benchmark in the model panel, and a UI for
+registering a local ONNX file. The manifest already supports a local source, so
+that one is a hand-edited entry in the user manifest for now.
 
 ## M3 - VR link and calibration
 

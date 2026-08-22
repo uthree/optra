@@ -76,6 +76,25 @@ impl ModelSet {
         }
     }
 
+    /// Starts loading everything named here that is not loaded yet.
+    ///
+    /// Models are warmed as soon as the stage starts rather than when a person
+    /// first appears, so the first person does not wait a second for a session
+    /// to build.
+    pub fn ensure(&mut self, detectors: &[String], poses: &[String]) {
+        let provider = self.provider;
+        for id in detectors {
+            request(&mut self.detectors, id, provider, |spec, provider| {
+                arch::build_detector(&spec, provider)
+            });
+        }
+        for id in poses {
+            request(&mut self.poses, id, provider, |spec, provider| {
+                arch::build_pose2d(&spec, provider)
+            });
+        }
+    }
+
     /// Drops everything not named here, so a swapped-out model releases its
     /// GPU memory.
     pub fn retain(&mut self, detectors: &[String], poses: &[String]) {

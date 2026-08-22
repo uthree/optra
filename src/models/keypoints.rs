@@ -176,6 +176,39 @@ pub fn names() -> Vec<&'static str> {
     table().keys().map(String::as_str).collect()
 }
 
+/// Bones, for drawing a skeleton.
+///
+/// A bone is only drawn when both of its ends are present, so the same list
+/// works for a 17-point model and a 26-point one: the extra bones simply do not
+/// appear. The torso is spanned both through the spine and around the shoulders
+/// and hips, so a layout without a neck or pelvis point still looks like a body.
+pub const BONES: [(Joint, Joint); 24] = [
+    (Joint::Head, Joint::Neck),
+    (Joint::Nose, Joint::Head),
+    (Joint::Neck, Joint::LeftShoulder),
+    (Joint::Neck, Joint::RightShoulder),
+    (Joint::LeftShoulder, Joint::RightShoulder),
+    (Joint::LeftShoulder, Joint::LeftElbow),
+    (Joint::LeftElbow, Joint::LeftWrist),
+    (Joint::RightShoulder, Joint::RightElbow),
+    (Joint::RightElbow, Joint::RightWrist),
+    (Joint::Neck, Joint::Hip),
+    (Joint::LeftShoulder, Joint::LeftHip),
+    (Joint::RightShoulder, Joint::RightHip),
+    (Joint::Hip, Joint::LeftHip),
+    (Joint::Hip, Joint::RightHip),
+    (Joint::LeftHip, Joint::RightHip),
+    (Joint::LeftHip, Joint::LeftKnee),
+    (Joint::LeftKnee, Joint::LeftAnkle),
+    (Joint::RightHip, Joint::RightKnee),
+    (Joint::RightKnee, Joint::RightAnkle),
+    (Joint::LeftAnkle, Joint::LeftHeel),
+    (Joint::LeftHeel, Joint::LeftBigToe),
+    (Joint::LeftBigToe, Joint::LeftSmallToe),
+    (Joint::RightAnkle, Joint::RightHeel),
+    (Joint::RightHeel, Joint::RightBigToe),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

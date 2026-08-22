@@ -9,6 +9,9 @@ use super::PanelContext;
 use crate::capture::source::ControlInfo;
 use crate::capture::{CameraCommand, CameraState};
 use crate::config::{CameraConfig, ControlName, LensKind, Rotation, SourceConfig};
+use crate::models::keypoints;
+use crate::models::manifest::{Manifest, ModelKind, ModelSpec};
+use crate::pipeline::PoseFrame;
 
 /// How long a value the user just set keeps priority over what the device
 /// reports, so that a dragged slider does not snap back while the camera thread
@@ -26,6 +29,9 @@ pub struct CamerasPanel {
     needs_restart: bool,
     /// Property values the user changed but the device has not confirmed yet.
     pending: HashMap<(String, ControlName), (i64, Instant)>,
+    /// The model catalogue, read once for the per-camera model pickers.
+    catalogue: Vec<ModelSpec>,
+    catalogue_loaded: bool,
 }
 
 struct DetectedDevice {
@@ -40,6 +46,7 @@ struct Preview {
 
 impl CamerasPanel {
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
+        self.ensure_catalogue();
         self.toolbar(ui, ctx);
         ui.add_space(4.0);
         self.device_picker(ui, ctx);
@@ -67,9 +74,18 @@ impl CamerasPanel {
                 .clicked()
             {
                 ctx.capture.start(&ctx.config.cameras, ctx.supervisor);
+                if ctx.config.inference.enabled {
+                    ctx.pipeline.start(
+                        ctx.config.inference.clone(),
+                        &ctx.config.cameras,
+                        ctx.capture.channels(),
+                        ctx.supervisor,
+                    );
+                }
                 self.needs_restart = false;
             }
             if ui.add_enabled(running, egui::Button::new("Stop")).clicked() {
+                ctx.pipeline.stop();
                 ctx.capture.stop();
                 self.previews.clear();
                 self.needs_restart = false;
@@ -240,6 +256,9 @@ impl CamerasPanel {
                     }
                 });
 
+                self.model_overrides(ui, ctx, index);
+
+                let camera = &ctx.config.cameras[index];
                 if let Some(stats) = stats {
                     let requested = camera.fps as f32;
                     let measured = stats.measured_fps;
@@ -445,15 +464,20 @@ impl CamerasPanel {
                         }
                     }
 
+                    let pose = ctx.pipeline.channel(&id).and_then(|channel| channel.peek());
+
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&channel.config.label).strong());
                         match self.previews.get(&id) {
                             Some(preview) => {
                                 let aspect = preview.texture.aspect_ratio();
-                                ui.add(
+                                let response = ui.add(
                                     egui::Image::new(&preview.texture)
                                         .fit_to_exact_size(egui::vec2(width, width / aspect)),
                                 );
+                                if let Some(pose) = pose {
+                                    draw_pose(ui, response.rect, &pose);
+                                }
                             }
                             None => {
                                 ui.label(RichText::new("waiting for the first frame").weak());
@@ -528,4 +552,140 @@ fn state_text(state: CameraState) -> RichText {
         CameraState::Stopped => Color32::GRAY,
     };
     RichText::new(state.label()).color(color)
+}
+
+/// Draws the detection box and skeleton over a preview.
+///
+/// Keypoints are in source image pixels, so they are scaled into whatever space
+/// the preview was actually given rather than assuming it kept its aspect
+/// ratio.
+fn draw_pose(ui: &egui::Ui, rect: egui::Rect, pose: &PoseFrame) {
+    if pose.width == 0 || pose.height == 0 {
+        return;
+    }
+
+    let scale_x = rect.width() / pose.width as f32;
+    let scale_y = rect.height() / pose.height as f32;
+    let map = |x: f32, y: f32| egui::pos2(rect.min.x + x * scale_x, rect.min.y + y * scale_y);
+
+    let painter = ui.painter_at(rect);
+
+    if let Some(person) = &pose.detection {
+        painter.rect_stroke(
+            egui::Rect::from_min_max(map(person.x1, person.y1), map(person.x2, person.y2)),
+            2.0,
+            egui::Stroke::new(1.5, Color32::from_rgb(120, 210, 140)),
+            egui::StrokeKind::Middle,
+        );
+    }
+
+    let bone_color = Color32::from_rgb(230, 236, 250);
+    for (a, b) in keypoints::BONES {
+        if let (Some(start), Some(end)) = (pose.keypoints.get(a), pose.keypoints.get(b)) {
+            painter.line_segment(
+                [map(start.x, start.y), map(end.x, end.y)],
+                egui::Stroke::new(2.0, bone_color),
+            );
+        }
+    }
+
+    for (joint, keypoint) in pose.keypoints.iter() {
+        // The lower body is what this application exists for, so it is drawn
+        // in a colour that stands out from the rest of the skeleton.
+        let color = if joint.is_lower_body() {
+            Color32::from_rgb(250, 190, 90)
+        } else {
+            Color32::from_rgb(120, 200, 250)
+        };
+        painter.circle_filled(map(keypoint.x, keypoint.y), 3.0, color);
+    }
+}
+
+impl CamerasPanel {
+    fn ensure_catalogue(&mut self) {
+        if self.catalogue_loaded {
+            return;
+        }
+        self.catalogue_loaded = true;
+        match Manifest::load() {
+            Ok(models) => self.catalogue = models,
+            Err(err) => tracing::warn!("failed to read the model catalogue: {err:#}"),
+        }
+    }
+
+    /// Lets one camera opt out of the shared model choice.
+    ///
+    /// A camera with a clear view of the legs can afford the accurate model
+    /// while a badly placed one runs something cheap, and comparing two models
+    /// side by side in the same room is the only honest way to choose.
+    fn model_overrides(&self, ui: &mut egui::Ui, ctx: &mut PanelContext<'_>, index: usize) {
+        let mut changed = false;
+
+        ui.horizontal(|ui| {
+            changed |= self.override_picker(
+                ui,
+                ("detector", index),
+                "Detector",
+                ModelKind::Detector,
+                &ctx.config.inference.detector_model.clone(),
+                &mut ctx.config.cameras[index].detector_model,
+            );
+            changed |= self.override_picker(
+                ui,
+                ("pose", index),
+                "Pose",
+                ModelKind::Pose2d,
+                &ctx.config.inference.pose_model.clone(),
+                &mut ctx.config.cameras[index].pose_model,
+            );
+        });
+
+        if changed {
+            ctx.dirty = true;
+            ctx.pipeline
+                .configure(ctx.config.inference.clone(), &ctx.config.cameras);
+        }
+    }
+
+    fn override_picker(
+        &self,
+        ui: &mut egui::Ui,
+        salt: (&str, usize),
+        label: &str,
+        kind: ModelKind,
+        shared: &str,
+        selected: &mut Option<String>,
+    ) -> bool {
+        let mut changed = false;
+        ui.label(label);
+
+        let shared_name = self.model_name(shared);
+        let current = match selected {
+            None => format!("default ({shared_name})"),
+            Some(id) => self.model_name(id),
+        };
+
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(current)
+            .width(240.0)
+            .show_ui(ui, |ui| {
+                changed |= ui
+                    .selectable_value(selected, None, format!("default ({shared_name})"))
+                    .changed();
+                for spec in self.catalogue.iter().filter(|spec| spec.kind == kind) {
+                    changed |= ui
+                        .selectable_value(selected, Some(spec.id.clone()), &spec.name)
+                        .changed();
+                }
+            });
+        changed
+    }
+
+    fn model_name(&self, id: &str) -> String {
+        self.catalogue
+            .iter()
+            .find(|spec| spec.id == id)
+            .map(|spec| spec.name.clone())
+            .unwrap_or_else(|| id.to_owned())
+    }
 }

@@ -62,6 +62,7 @@ pub struct PanelContext<'a> {
     pub log: &'a crate::logging::LogBuffer,
     pub supervisor: &'a mut crate::worker::Supervisor,
     pub capture: &'a mut crate::capture::CaptureManager,
+    pub pipeline: &'a mut crate::pipeline::Pipeline,
     /// Set by a panel when it changed the config, so the shell can save it.
     pub dirty: bool,
 }
