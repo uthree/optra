@@ -26,6 +26,7 @@ pub struct Config {
     pub capture: CaptureConfig,
     pub inference: InferenceConfig,
     pub vr: VrConfig,
+    pub fusion: FusionConfig,
     /// Room profile to load at startup, by name. The calibration a room needs
     /// belongs to the room rather than to the application, so only its name
     /// lives here.
@@ -210,6 +211,83 @@ impl Default for InferenceConfig {
             detector_model: "yolox-tiny-humanart-416".to_owned(),
             pose_model: "rtmpose-m-halpe26-256x192".to_owned(),
             detect_every: 5,
+        }
+    }
+}
+
+/// Settings for the fusion stage.
+///
+/// Only the knobs a user has reason to touch. Everything else the stage needs —
+/// outlier thresholds, constraint passes, process noise — is decided by the
+/// code that has to answer for it, and putting it here would only make it
+/// possible to break tracking from a text file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FusionConfig {
+    pub enabled: bool,
+    /// Rate of the fusion clock, in hertz.
+    pub rate_hz: u32,
+    /// How far behind the slowest camera's measured delay the clock runs, in
+    /// milliseconds.
+    ///
+    /// Interpolating a camera onto an instant needs a frame after it, so the
+    /// clock has to sit back far enough that one has arrived. Too small and
+    /// cameras drop out of ticks; too large and the prediction has further to
+    /// reach. One frame interval of the slowest camera is the right size.
+    pub align_slack_ms: u32,
+    /// Keypoint confidence below which a ray is not used.
+    pub min_confidence: f32,
+    /// Positional uncertainty past which a joint is withheld, in metres.
+    pub max_joint_sigma: f32,
+    /// How far ahead to predict, in milliseconds. This should be the delay from
+    /// a frame being exposed to the consumer showing it.
+    pub prediction_ms: u32,
+    /// Cutoff of the position smoothing at rest, in hertz. Lower is stiller and
+    /// slower to respond.
+    pub smoothing_hz: f32,
+    /// Keep refining the body measurement while tracking runs.
+    pub measure_body: bool,
+}
+
+impl Default for FusionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_hz: 60,
+            align_slack_ms: 40,
+            min_confidence: 0.3,
+            max_joint_sigma: 0.10,
+            prediction_ms: 60,
+            smoothing_hz: 1.2,
+            measure_body: true,
+        }
+    }
+}
+
+impl FusionConfig {
+    pub fn fuse_options(&self) -> crate::fusion::fuse::FuseOptions {
+        crate::fusion::fuse::FuseOptions {
+            min_confidence: self.min_confidence as f64,
+            max_sigma: self.max_joint_sigma as f64,
+            ..crate::fusion::fuse::FuseOptions::default()
+        }
+    }
+
+    pub fn fit_options(
+        &self,
+        measure: crate::fusion::bones::MeasureOptions,
+    ) -> crate::fusion::fit::FitOptions {
+        crate::fusion::fit::FitOptions {
+            measure,
+            ..crate::fusion::fit::FitOptions::default()
+        }
+    }
+
+    pub fn filter_options(&self) -> crate::fusion::filter::FilterOptions {
+        crate::fusion::filter::FilterOptions {
+            min_cutoff: self.smoothing_hz as f64,
+            horizon: std::time::Duration::from_millis(self.prediction_ms as u64),
+            ..crate::fusion::filter::FilterOptions::default()
         }
     }
 }

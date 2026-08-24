@@ -117,7 +117,9 @@ impl PoseChannel {
         self.stats.lock().clone()
     }
 
-    fn publish(&self, frame: PoseFrame) {
+    /// Hands over one camera's result, updating the newest slot, the history
+    /// and the rate statistics.
+    pub fn publish(&self, frame: PoseFrame) {
         let now = Instant::now();
         let latency = now.duration_since(frame.captured_at).as_secs_f32() * 1000.0;
         let empty = frame.keypoints.is_empty();
@@ -214,6 +216,21 @@ impl Pipeline {
 
     pub fn channel(&self, camera: &str) -> Option<&Arc<PoseChannel>> {
         self.channels.get(camera)
+    }
+
+    /// Every camera's output, for a stage that consumes all of them.
+    ///
+    /// Sorted, so that a stage's camera indices do not depend on the order a
+    /// hash map happens to iterate in — that would make one run's diagnostics
+    /// unreadable against another's.
+    pub fn channels(&self) -> Vec<(String, Arc<PoseChannel>)> {
+        let mut channels: Vec<(String, Arc<PoseChannel>)> = self
+            .channels
+            .iter()
+            .map(|(id, channel)| (id.clone(), channel.clone()))
+            .collect();
+        channels.sort_by(|a, b| a.0.cmp(&b.0));
+        channels
     }
 
     /// Starts the stage over the given cameras.

@@ -10,3 +10,4 @@ pub mod bones;
 pub mod filter;
 pub mod fit;
 pub mod fuse;
+pub mod stage;

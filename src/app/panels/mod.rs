@@ -67,6 +67,9 @@ pub struct PanelContext<'a> {
     pub recorder: &'a mut crate::calib::Recorder,
     /// The room profile in force, if one has been solved or loaded.
     pub room: &'a mut Option<crate::calib::RoomCalibration>,
+    pub fusion: &'a mut crate::fusion::stage::Fusion,
+    /// Why fusion is not running, when the shell could not start it.
+    pub fusion_problem: Option<&'a str>,
     /// Set by a panel when it changed the config, so the shell can save it.
     pub dirty: bool,
 }

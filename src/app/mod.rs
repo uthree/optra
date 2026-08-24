@@ -10,6 +10,8 @@ use egui::RichText;
 use crate::calib::{Recorder, RoomCalibration};
 use crate::capture::CaptureManager;
 use crate::config::Config;
+use crate::fusion::bones::Skeleton;
+use crate::fusion::stage::Fusion;
 use crate::logging::LogBuffer;
 use crate::pipeline::Pipeline;
 use crate::vr::VrLink;
@@ -28,6 +30,12 @@ pub struct OptraApp {
     vr: VrLink,
     recorder: Recorder,
     room: Option<RoomCalibration>,
+    fusion: Fusion,
+    /// The measured body, kept across restarts so tracking does not begin by
+    /// re-learning a skeleton it already knows.
+    body: Skeleton,
+    /// Why fusion is not running, when it should be.
+    fusion_problem: Option<String>,
 
     cameras: panels::cameras::CamerasPanel,
     models: panels::models::ModelsPanel,
@@ -85,6 +93,9 @@ impl OptraApp {
             vr,
             recorder: Recorder::default(),
             room,
+            fusion: Fusion::default(),
+            body: Skeleton::load_or_default(),
+            fusion_problem: None,
             cameras: Default::default(),
             models: Default::default(),
             calibration: Default::default(),
@@ -142,6 +153,60 @@ impl OptraApp {
             self.config.window.size = size;
             self.config.window.pos = Some(pos);
             self.mark_dirty();
+        }
+    }
+
+    /// Starts or stops the fusion stage as its prerequisites come and go.
+    ///
+    /// Fusion needs a calibrated room and at least two of its cameras running
+    /// with a model attached. All three are things a user changes while the
+    /// application is open, so this is checked every frame rather than set up
+    /// once — and when it cannot run, the reason is kept for the panel to show
+    /// instead of the stage simply being absent.
+    fn sync_fusion(&mut self) {
+        let wanted = self.config.fusion.enabled && self.pipeline.is_running();
+
+        let Some(room) = self.room.as_ref().filter(|_| wanted) else {
+            if self.fusion.is_running() {
+                self.fusion.stop();
+            }
+            self.fusion_problem = match (wanted, self.room.is_some()) {
+                (false, _) => None,
+                (true, false) => Some("no room profile is loaded".to_owned()),
+                (true, true) => None,
+            };
+            return;
+        };
+
+        if self.fusion.is_running() {
+            return;
+        }
+
+        let channels = self.pipeline.channels();
+        self.fusion_problem = self
+            .fusion
+            .start(
+                &self.config.fusion,
+                channels,
+                room,
+                self.body.clone(),
+                &mut self.supervisor,
+            )
+            .err();
+    }
+
+    /// Keeps the body measurement the fusion stage refined, so the next launch
+    /// starts from a skeleton rather than from nothing.
+    fn save_body(&mut self) {
+        let Some(measured) = self.fusion.body() else {
+            return;
+        };
+        if measured.bones.is_empty() {
+            return;
+        }
+        self.body = measured;
+        if let Err(err) = self.body.save() {
+            tracing::warn!("failed to save the body measurement: {err:#}");
         }
     }
 
@@ -225,6 +290,7 @@ impl OptraApp {
 impl eframe::App for OptraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_worker_events();
+        self.sync_fusion();
         self.track_window_geometry(ui.ctx());
 
         self.nav(ui);
@@ -247,6 +313,8 @@ impl eframe::App for OptraApp {
                 vr: &mut self.vr,
                 recorder: &mut self.recorder,
                 room: &mut self.room,
+                fusion: &mut self.fusion,
+                fusion_problem: self.fusion_problem.as_deref(),
                 dirty: false,
             };
 
@@ -270,6 +338,8 @@ impl eframe::App for OptraApp {
 
     fn on_exit(&mut self) {
         // Cameras first: their threads are the ones the supervisor waits on.
+        self.save_body();
+        self.fusion.stop();
         self.recorder.stop();
         self.pipeline.stop();
         self.capture.stop();

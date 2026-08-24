@@ -38,6 +38,34 @@ impl Intrinsics {
         }
     }
 
+    /// The same optics read out at another resolution.
+    ///
+    /// A user who changes a camera's resolution after calibrating has not
+    /// changed its lens, and re-solving the room for that would be absurd. The
+    /// aspect ratio has to match: a sensor that crops rather than scales really
+    /// does see a different field of view, and pretending otherwise would give
+    /// a confidently wrong answer.
+    pub fn scaled_to(&self, width: u32, height: u32) -> Option<Self> {
+        if width == 0 || height == 0 || self.width == 0 || self.height == 0 {
+            return None;
+        }
+
+        let x = width as f64 / self.width as f64;
+        let y = height as f64 / self.height as f64;
+        if (x - y).abs() > 0.01 * x.max(y) {
+            return None;
+        }
+
+        Some(Self {
+            fx: self.fx * x,
+            fy: self.fy * y,
+            cx: self.cx * x,
+            cy: self.cy * y,
+            width,
+            height,
+        })
+    }
+
     pub fn matrix(&self) -> Matrix3<f64> {
         Matrix3::new(self.fx, 0.0, self.cx, 0.0, self.fy, self.cy, 0.0, 0.0, 1.0)
     }

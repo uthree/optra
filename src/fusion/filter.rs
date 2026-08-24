@@ -73,7 +73,7 @@ impl Default for FilterOptions {
     fn default() -> Self {
         Self {
             min_cutoff: 1.2,
-            beta: 0.5,
+            beta: 4.0,
             agility: 8.0,
             horizon: Duration::from_millis(60),
             max_prediction: 0.35,

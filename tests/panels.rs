@@ -13,6 +13,7 @@ use optra::app::panels::{calibration, cameras, log, models, output, tracking};
 use optra::calib::{Recorder, RoomCalibration};
 use optra::capture::CaptureManager;
 use optra::config::{CameraConfig, Config, SourceConfig};
+use optra::fusion::stage::Fusion;
 use optra::logging::LogBuffer;
 use optra::pipeline::Pipeline;
 use optra::vr::VrLink;
@@ -28,6 +29,7 @@ fn draw_every_panel(config: Config) {
     let mut vr = VrLink::default();
     let mut recorder = Recorder::default();
     let mut room: Option<RoomCalibration> = None;
+    let mut fusion = Fusion::default();
 
     let mut cameras_panel = cameras::CamerasPanel::default();
     let mut models_panel = models::ModelsPanel::default();
@@ -53,6 +55,8 @@ fn draw_every_panel(config: Config) {
                         vr: &mut vr,
                         recorder: &mut recorder,
                         room: &mut room,
+                        fusion: &mut fusion,
+                        fusion_problem: None,
                         dirty: false,
                     };
 
@@ -166,6 +170,7 @@ fn a_solved_room_lays_out() {
     let mut vr = VrLink::default();
     let mut recorder = Recorder::default();
     let mut loaded = Some(room);
+    let mut fusion = Fusion::default();
     let mut panel = calibration::CalibrationPanel::default();
 
     let ctx = egui::Context::default();
@@ -180,6 +185,8 @@ fn a_solved_room_lays_out() {
                 vr: &mut vr,
                 recorder: &mut recorder,
                 room: &mut loaded,
+                fusion: &mut fusion,
+                fusion_problem: None,
                 dirty: false,
             };
             panel.ui(ui, &mut panel_ctx);
