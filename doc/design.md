@@ -746,6 +746,41 @@ fixed bone lengths, keeps joints above the floor plane, and limits knee
 hyperextension. Unobserved joints are filled by the constraint solver rather
 than by the last raw value.
 
+This is not smoothing, and the distinction is the whole point. Smoothing trades
+lag for jitter and treats every direction alike. The fit removes only the part
+of the error that is physically impossible — a shin that grew four centimetres,
+a foot below the floor, a leg folded backwards — which is roughly half of it,
+and costs no lag at all. Filtering (9.4) then works on what is left.
+
+The solver is sequential projection: each constraint is satisfied in turn, over
+about a dozen passes, with each joint moving in inverse proportion to the square
+of its positional uncertainty. That weighting is what separates a fit that
+cleans up the uncertain joints from one that drags the certain ones around: a
+joint located to five millimetres barely moves, one located to five centimetres
+gives way, one nobody saw goes wherever the constraints put it. The floor is
+enforced last, so it is the constraint that comes out exactly satisfied — a foot
+a centimetre underground is the most visible failure there is in VR.
+
+A knee is kept from ending up behind the line between its hip and ankle, with
+the body's facing taken from the line across its hips. This is not a theoretical
+limit: from behind, a knee and the space in front of it look much alike, and a
+pose model asked which way the leg folds will sometimes answer wrongly. Left
+alone the leg snaps between two mirror-image bends as the user turns. The knee
+is reflected across the line rather than flattened onto it, because the amount
+of bend was never in doubt — only its direction.
+
+A joint that goes out of sight is seeded from its previous fitted position and
+then moved by the constraints, so it is continuous without being frozen. A joint
+that was *never* seen stays absent: there is no honest place to put it.
+
+A bone whose measurement never settled is not enforced, and neither is anything
+in an unmeasured skeleton — the fit passes the reconstruction through rather
+than inventing anatomy. When the measured skeleton and the cameras disagree
+badly, the fit reports how far it had to drag the worst joint instead of quietly
+resolving the disagreement in the skeleton's favour. Reverting individual joints
+was tried and rejected: a body where some joints are fitted and others are not
+satisfies nothing, and it is the *pose* that is wrong, not the joint.
+
 The lengths are measured rather than assumed. A table of average proportions
 would be wrong for most people by more than the error being chased, and the
 cameras are already producing the measurement for free — a shin that reads 41 cm
