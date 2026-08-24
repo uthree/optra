@@ -1,4 +1,4 @@
-//! Camera geometry: lens models, projection, and triangulation.
+//! Camera geometry: lens models, projection, calibration and triangulation.
 //!
 //! Everything here works in the world frame described in the design document:
 //! right-handed, +Y up, metres, matching OpenVR's standing space. Camera axes
@@ -10,8 +10,12 @@
 
 pub mod camera;
 pub mod lens;
+pub mod refine;
+pub mod resection;
 pub mod triangulate;
 
 pub use camera::{Camera, Intrinsics};
 pub use lens::Lens;
+pub use refine::{RefineOptions, Refinement, Sighting, refine};
+pub use resection::{Correspondence, Resection, ResectionOptions, resect};
 pub use triangulate::{Observation, Triangulation, triangulate};

@@ -451,12 +451,31 @@ roughly a factor of two.
 3. Initial per-camera solve: DLT resection from at least 6 well-spread
    correspondences yields the full projection matrix `P`, decomposed by RQ into
    `K`, `R`, `t`. RANSAC rejects frames with bad detections. For strongly
-   distorted lenses the resection is seeded from central correspondences only.
+   distorted lenses the resection is seeded from central correspondences only,
+   and the straighten-and-solve step is iterated, because straightening the
+   pixels needs the intrinsics the solve is producing.
+
+   The head keypoint offset is still unknown at this point, so every
+   correspondence carries the same few centimetres of error. The resection
+   inlier threshold has to be loose enough to absorb it — around 0.08 rad —
+   or the whole walk is discarded as outliers. Bad detections are still an
+   order of magnitude further out than that.
+
+   The solve also reports how far the correspondences are from lying in a
+   plane. A walk that never changes height is degenerate for the DLT, and that
+   has to be reported rather than returned as a confident wrong camera.
 4. Joint refinement: Levenberg-Marquardt over all cameras minimizing angular
    reprojection error, with the HMD-to-head-keypoint offset shared across
    cameras and each camera's distortion coefficients free. The residual is
    angular rather than pixel-based so that a high-resolution camera does not
    dominate the objective purely by having smaller pixels.
+
+   The refinement runs twice. A Huber weight bounds how far a bad keypoint can
+   pull the first pass, but bounded influence is not no influence, and a walk
+   of several hundred frames carries enough missed keypoints for the remainder
+   to matter. The second pass discards the sightings the first left behind and
+   fits the rest cleanly, starting again from the seed rather than from the
+   first pass, whose answer was shaped by the very data being dropped.
 5. The wizard reports RMS angular reprojection error per camera and a per-camera
    coverage heat map, and refuses to save a profile above a configurable
    threshold. Coverage is tracked per camera rather than globally: a narrow-FOV

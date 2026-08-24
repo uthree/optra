@@ -9,7 +9,7 @@ these steps build toward.
 | M0 - Project skeleton | done |
 | M1 - Camera capture | done |
 | M2 - Inference | done |
-| M3 - VR link and calibration | next |
+| M3 - VR link and calibration | in progress |
 | M4 - Fusion | |
 | M5 - Tracker output | |
 | M6 - Tuning and release | |
@@ -109,6 +109,16 @@ that one is a hand-edited entry in the user manifest for now.
 
 **Done when:** a calibration run converges to a low RMS reprojection error and
 the reconstructed camera positions match the physical room layout.
+
+Progress: the solver is written and verified against synthetic rooms whose
+answer is known — lens models, projection, triangulation, resection and the
+joint refinement. `tests/calibration.rs` runs the whole procedure on four
+unlike cameras and recovers their positions to within 3 mm and the head offset
+to within 3 mm, including a run with a camera blocked for half the walk and one
+keypoint in twelve thrown somewhere else.
+
+The remaining pieces all need hardware in the loop: the OpenVR client, the
+correspondence recorder, latency estimation, and the wizard UI around them.
 
 ## M4 - Fusion
 
