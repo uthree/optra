@@ -6,7 +6,7 @@
 //! ray's *direction*. That is what lets a 1080p narrow camera correctly outvote
 //! a 480p fisheye looking at the same joint.
 
-use nalgebra::{Matrix4, Point2, Point3, Vector3};
+use nalgebra::{Matrix3, Matrix4, Point2, Point3, Vector3};
 
 use super::camera::Camera;
 
@@ -73,6 +73,8 @@ pub struct Triangulation {
     pub inliers: Vec<usize>,
     /// Weight each contributing camera carried, normalized to sum to one.
     pub weights: Vec<(usize, f64)>,
+    /// Position covariance implied by the rays, in square metres.
+    pub covariance: Matrix3<f64>,
 }
 
 impl Triangulation {
@@ -90,6 +92,21 @@ impl Triangulation {
         }
         let sum: f64 = self.residuals.iter().map(|(_, r)| r * r).sum();
         (sum / self.residuals.len() as f64).sqrt()
+    }
+
+    /// Standard deviation along the least constrained direction, in metres.
+    ///
+    /// The single number worth putting in front of a user, because it is the
+    /// one that says how much this joint can be believed. Two cameras twenty
+    /// degrees apart agree perfectly and still leave the point free to slide
+    /// along the bisector; the residual cannot see that and this can.
+    pub fn sigma(&self) -> f64 {
+        self.covariance
+            .symmetric_eigenvalues()
+            .iter()
+            .fold(0.0, |worst: f64, value| worst.max(*value))
+            .max(0.0)
+            .sqrt()
     }
 }
 
@@ -153,8 +170,14 @@ pub fn triangulate(
     let (inliers, seed) = best?;
 
     // Re-solve using every inlier, which is what actually uses the extra
-    // cameras rather than just the pair that happened to seed the hypothesis.
-    let point = solve(cameras, observations, &inliers).unwrap_or(seed);
+    // cameras rather than just the pair that happened to seed the hypothesis,
+    // then polish that against the objective the answer is judged by.
+    let linear = solve(cameras, observations, &inliers).unwrap_or(seed);
+    let polished = polish(cameras, observations, &inliers, linear);
+    let (point, covariance, metric) = match polished {
+        Some(polished) => polished,
+        None => (linear, Matrix3::zeros(), Vec::new()),
+    };
 
     let residuals: Vec<(usize, f64)> = inliers
         .iter()
@@ -164,20 +187,36 @@ pub fn triangulate(
         })
         .collect();
 
-    let total: f64 = inliers
-        .iter()
-        .map(|index| 1.0 / observations[*index].sigma.max(1e-9).powi(2))
-        .sum();
-    let weights = inliers
-        .iter()
-        .map(|index| {
-            let weight = 1.0 / observations[*index].sigma.max(1e-9).powi(2);
-            (observations[*index].camera, weight / total.max(1e-12))
-        })
-        .collect();
+    // How much each camera actually pinned the point down. The angular
+    // uncertainty alone would say a distant camera is as good as a near one
+    // looking at the same joint through the same lens, and it is not: the same
+    // angle covers more room the further away it is measured from.
+    let mut weights: Vec<(usize, f64)> = if metric.len() == inliers.len() {
+        inliers
+            .iter()
+            .zip(&metric)
+            .map(|(index, weight)| (observations[*index].camera, *weight))
+            .collect()
+    } else {
+        inliers
+            .iter()
+            .map(|index| {
+                (
+                    observations[*index].camera,
+                    1.0 / observations[*index].sigma.max(1e-9).powi(2),
+                )
+            })
+            .collect()
+    };
+
+    let total: f64 = weights.iter().map(|(_, weight)| *weight).sum();
+    for (_, weight) in &mut weights {
+        *weight /= total.max(1e-12);
+    }
 
     Some(Triangulation {
         point,
+        covariance,
         residuals,
         inliers: inliers
             .iter()
@@ -185,6 +224,70 @@ pub fn triangulate(
             .collect(),
         weights,
     })
+}
+
+/// Refines a point against the objective it is actually judged by, and reports
+/// how well the rays pinned it down.
+///
+/// The linear solve minimizes an algebraic quantity that happens to vanish at
+/// the right answer; away from it, it is biased towards the cameras nearest the
+/// point. This minimizes the weighted perpendicular distance to each ray in
+/// metres, which is the maximum-likelihood estimate under the angular noise
+/// model, and it is what converts an angular uncertainty into the positional
+/// one a user can read.
+///
+/// Returns the point, its covariance in square metres, and the weight each
+/// inlier carried, in the order they were given.
+fn polish(
+    cameras: &[Camera],
+    observations: &[Observation],
+    use_indices: &[usize],
+    seed: Point3<f64>,
+) -> Option<(Point3<f64>, Matrix3<f64>, Vec<f64>)> {
+    /// A joint closer to a camera than this is inside it, and the range is
+    /// only there to scale an angle into a distance.
+    const MIN_RANGE: f64 = 0.05;
+    /// The weights depend on the ranges, which depend on the point. Three
+    /// passes is past where it stops moving for any real room.
+    const PASSES: usize = 3;
+
+    let mut point = seed;
+    let mut covariance = Matrix3::zeros();
+    let mut weights = Vec::with_capacity(use_indices.len());
+
+    for _ in 0..PASSES {
+        // Sum of w * P, where P projects out the ray direction: what is left is
+        // the displacement the ray can actually see.
+        let mut normal = Matrix3::zeros();
+        let mut moment = Vector3::zeros();
+        weights.clear();
+
+        for index in use_indices {
+            let observation = observations[*index];
+            let camera = cameras.get(observation.camera)?;
+            let origin = camera.position();
+            let direction = camera.ray(observation.pixel).into_inner();
+
+            // An angle is not a distance until it is multiplied by one. The
+            // same half-degree of ray uncertainty is a millimetre up close and
+            // a centimetre across the room.
+            let range = (point - origin).dot(&direction).max(MIN_RANGE);
+            let weight = 1.0 / (observation.sigma.max(1e-9) * range).powi(2);
+
+            let projector = Matrix3::identity() - direction * direction.transpose();
+            normal += weight * projector;
+            moment += weight * projector * origin.coords;
+            weights.push(weight);
+        }
+
+        // Rays that are all but parallel leave the point free to slide along
+        // them, and the inverse is what says so rather than something to guard
+        // against.
+        covariance = normal.try_inverse()?;
+        point = Point3::from(covariance * moment);
+    }
+
+    Some((point, covariance, weights))
 }
 
 /// Weighted linear triangulation over the given observations.
@@ -387,6 +490,126 @@ mod tests {
             (b.point - truth).norm() < (a.point - truth).norm(),
             "down-weighting the offset ray should move the answer closer to the truth"
         );
+    }
+
+    /// Two cameras looking from nearly the same place agree perfectly and still
+    /// have no idea how far away the point is. The residual cannot see that;
+    /// the covariance is the thing that can.
+    #[test]
+    fn rays_that_barely_cross_report_an_uncertain_point() {
+        let truth = Point3::new(0.0, 0.9, 0.0);
+
+        let crossed = vec![
+            corner_camera(-1.8, -1.8, 1280, 70.0),
+            corner_camera(1.8, -1.8, 1280, 70.0),
+        ];
+        let grazing = vec![
+            corner_camera(-1.8, -1.8, 1280, 70.0),
+            corner_camera(-1.7, -1.8, 1280, 70.0),
+        ];
+
+        let wide = triangulate(&crossed, &sightings(&crossed, truth, 0.9), 0.02).unwrap();
+        let narrow = triangulate(&grazing, &sightings(&grazing, truth, 0.9), 0.02).unwrap();
+
+        assert!(
+            narrow.sigma() > 10.0 * wide.sigma(),
+            "a grazing pair should be far less certain, got {} against {}",
+            narrow.sigma(),
+            wide.sigma()
+        );
+        assert!(
+            narrow.rms_residual() < 1e-6,
+            "and it should say so despite fitting its own rays perfectly"
+        );
+    }
+
+    #[test]
+    fn a_third_camera_tightens_the_answer() {
+        let cameras = room();
+        let truth = Point3::new(0.2, 0.8, -0.1);
+
+        let pair = triangulate(&cameras, &sightings(&cameras[..2], truth, 0.9), 0.02).unwrap();
+        let trio = triangulate(&cameras, &sightings(&cameras, truth, 0.9), 0.02).unwrap();
+
+        assert!(trio.sigma() < pair.sigma());
+    }
+
+    /// The uncertainty is only worth reporting if it is the size of the error
+    /// that actually turns up. Noise of the size the model assumes is injected,
+    /// and the spread of the answers is compared against what was predicted.
+    #[test]
+    fn the_predicted_uncertainty_matches_the_error_that_occurs() {
+        let cameras = room();
+        let truth = Point3::new(0.1, 0.85, -0.2);
+        let clean = sightings(&cameras, truth, 0.9);
+
+        let predicted = triangulate(&cameras, &clean, 0.05).unwrap().sigma();
+
+        let mut noise = Gaussian::new(0x5EED_1234);
+        let spread = pixel_sigma(0.9);
+        let mut sum = 0.0;
+        const TRIALS: usize = 400;
+
+        for _ in 0..TRIALS {
+            let jittered: Vec<Observation> = clean
+                .iter()
+                .map(|observation| Observation {
+                    pixel: Point2::new(
+                        observation.pixel.x + noise.next() * spread,
+                        observation.pixel.y + noise.next() * spread,
+                    ),
+                    ..*observation
+                })
+                .collect();
+
+            // A threshold loose enough that the noise never costs a ray: this
+            // measures the uncertainty, not the outlier rejection.
+            let result = triangulate(&cameras, &jittered, 1.0).unwrap();
+            sum += (result.point - truth).norm_squared();
+        }
+
+        let actual = (sum / TRIALS as f64).sqrt();
+        // The prediction is the worst of the three axes, so the error over all
+        // three lands between one and the square root of three times it.
+        assert!(
+            actual > 0.7 * predicted && actual < 2.2 * predicted,
+            "predicted {predicted:.5} m, saw {actual:.5} m"
+        );
+    }
+
+    /// Deterministic standard normals, so the test above means the same thing
+    /// on every machine and every run.
+    struct Gaussian {
+        state: u64,
+        spare: Option<f64>,
+    }
+
+    impl Gaussian {
+        fn new(seed: u64) -> Self {
+            Self {
+                state: seed,
+                spare: None,
+            }
+        }
+
+        fn uniform(&mut self) -> f64 {
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+
+        fn next(&mut self) -> f64 {
+            if let Some(spare) = self.spare.take() {
+                return spare;
+            }
+            let (u, v) = (self.uniform(), self.uniform());
+            let radius = (-2.0 * u.ln()).sqrt();
+            let angle = std::f64::consts::TAU * v;
+            self.spare = Some(radius * angle.sin());
+            radius * angle.cos()
+        }
     }
 
     #[test]

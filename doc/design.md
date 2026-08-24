@@ -704,10 +704,40 @@ correctly loses influence during fast motion without being switched off. The
 RANSAC inlier threshold is likewise angular, so it means the same thing on every
 camera.
 
-Per-joint angular residuals are retained and surfaced in the UI, together with
-each camera's contribution weight; this is the single most useful diagnostic
-when tracking misbehaves, and it is what tells a user that one camera is
-mis-calibrated or badly placed.
+The linear solve is a seed, not the answer. It minimizes an algebraic quantity
+that vanishes at the right point but is biased towards the nearest cameras away
+from it, so the result is refined against the objective it is actually judged by:
+the weighted perpendicular distance to each ray, in metres. Each ray's weight
+there is `1 / (sigma_i × range_i)²` — an angle is not a distance until it is
+multiplied by one, and the same half-degree is a millimetre up close and a
+centimetre across the room. Three passes are enough, since only the ranges
+change between them.
+
+That refinement produces the number this stage is really for. Inverting its
+normal matrix gives the position covariance in square metres, and the square
+root of its largest eigenvalue is how far the joint could be wrong along the
+direction the cameras constrain least. **This, not the reprojection residual, is
+what says whether a joint can be believed.** Two cameras a hand's width apart
+agree with each other perfectly about a point neither of them can place along
+the line of sight: the residual reports zero error and the uncertainty reports a
+third of a metre. A joint whose uncertainty exceeds a threshold is withheld
+rather than reported, because passing it on would only give the filter something
+confident to smooth. The claim is checked rather than asserted — a unit test
+injects noise of the size the model assumes and confirms the spread of the
+answers matches what was predicted.
+
+Per-joint angular residuals and uncertainties are retained and surfaced in the
+UI, together with each camera's contribution weight and the cameras that were
+dropped as outliers; this is the single most useful diagnostic when tracking
+misbehaves, and it is what tells a user that one camera is mis-calibrated or
+badly placed.
+
+Joints are solved independently of one another, which is deliberate. A joint
+hidden from two of three cameras is a bad joint, not a bad pose, and letting it
+drag the rest of the body with it is the failure that makes multi-camera
+tracking feel worse than single-camera tracking. What holds the body together is
+the skeleton fit below, which knows about anatomy; this stage knows only about
+rays.
 
 ### 9.3 Skeleton fit
 

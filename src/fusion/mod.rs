@@ -6,3 +6,4 @@
 //! and filtering what comes out.
 
 pub mod align;
+pub mod fuse;
