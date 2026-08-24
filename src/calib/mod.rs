@@ -4,8 +4,10 @@
 //! is recorded by [`recorder`], and [`solve`] runs it through resection and
 //! joint refinement to produce the cameras.
 
+pub mod latency;
 pub mod recorder;
 pub mod solve;
 
+pub use latency::{Estimate, LatencyOptions};
 pub use recorder::{Recorder, RecorderConfig, Recording, Rig};
 pub use solve::{CameraCalibration, RoomCalibration, SolveOptions, solve};

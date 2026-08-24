@@ -279,6 +279,9 @@ impl CalibrationPanel {
             return;
         }
 
+        let mut rigs = stats.rigs.clone();
+        rigs.sort_by_key(|(rig, _)| (rig.role.order(), rig.joint));
+
         egui::Grid::new("calib-rigs")
             .num_columns(3)
             .striped(true)
@@ -288,7 +291,7 @@ impl CalibrationPanel {
                 ui.strong("");
                 ui.end_row();
 
-                for (rig, spread) in &stats.rigs {
+                for (rig, spread) in &rigs {
                     ui.label(rig.label());
                     ui.add(
                         egui::ProgressBar::new((*spread / 0.4).clamp(0.0, 1.0) as f32)
@@ -316,6 +319,13 @@ impl CalibrationPanel {
         let recording = channel.recording();
 
         ui.strong("Coverage");
+        ui.label(
+            RichText::new(
+                "Walk into the dark areas. The edges of a frame are what pin down the \n                 lens distortion, and they are the part a walk usually misses.",
+            )
+            .weak()
+            .small(),
+        );
         ui.horizontal_wrapped(|ui| {
             for trail in &recording.cameras {
                 ui.vertical(|ui| {
@@ -464,10 +474,10 @@ fn summary(ui: &mut egui::Ui, room: &RoomCalibration, id: &str) {
 
     ui.add_space(6.0);
     egui::Grid::new(id)
-        .num_columns(5)
+        .num_columns(6)
         .striped(true)
         .show(ui, |ui| {
-            for heading in ["Camera", "Position", "RMS", "Coverage", "Spread"] {
+            for heading in ["Camera", "Position", "RMS", "Coverage", "Spread", "Latency"] {
                 ui.strong(heading);
             }
             ui.end_row();
@@ -499,6 +509,20 @@ fn summary(ui: &mut egui::Ui, room: &RoomCalibration, id: &str) {
                     },
                     format!("{:.2}", camera.spread),
                 );
+
+                // A camera whose latency could not be measured is not broken;
+                // the walk simply was not brisk enough to leave a mark, and
+                // saying so is more use than showing a number nothing backs.
+                match camera.latency {
+                    Some(estimate) if estimate.is_confident() => {
+                        ui.label(format!("{:.0} ms", estimate.millis()))
+                    }
+                    Some(estimate) => ui.colored_label(
+                        Color32::from_rgb(190, 190, 190),
+                        format!("~{:.0} ms, unsure", estimate.millis()),
+                    ),
+                    None => ui.label(RichText::new("{2014}").weak()),
+                };
                 ui.end_row();
             }
         });

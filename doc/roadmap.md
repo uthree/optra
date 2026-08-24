@@ -105,7 +105,8 @@ that one is a hand-edited entry in the user manifest for now.
 - DLT resection with RANSAC, RQ decomposition into `K`, `R`, `t`. Done.
 - Levenberg-Marquardt bundle refinement on angular residuals, including
   distortion and the HMD-to-head-keypoint offset. Done.
-- Per-camera latency estimation by cross-correlation.
+- Per-camera latency estimation. Done, as a search over the reprojection error
+  rather than a correlation; see [design.md](design.md).
 - Calibration wizard UI: guidance, live coverage map, residual reporting,
   degenerate-configuration detection, profile save/load. Done.
 - 3D viewport showing camera frusta, play-space bounds and the floor grid.
@@ -144,8 +145,7 @@ profile. `tests/panels.rs` lays every panel out headlessly, which is how an
 immediate-mode UI gets tested at all — a panel nobody is looking at is never
 drawn, and a layout bug in it waits until someone is mid-walk.
 
-What is left: latency estimation, the 3D viewport, and a walk through a real
-room.
+What is left: the 3D viewport, and a walk through a real room.
 
 ## M4 - Fusion
 

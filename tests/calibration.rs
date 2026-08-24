@@ -473,6 +473,18 @@ fn a_recording_solves_into_a_room() {
             calibrated.id
         );
         assert!(calibrated.sightings > 100);
+
+        // The frames in this recording carry no delay, and a solve that
+        // invents one would shift every camera against a walk that never
+        // happened that way.
+        if let Some(latency) = calibrated.latency {
+            assert!(
+                latency.millis() < 5.0,
+                "{} was given {:.1} ms of latency that is not there",
+                calibrated.id,
+                latency.millis()
+            );
+        }
     }
 
     for (index, (rig, offset)) in solved.rigs.iter().enumerate() {

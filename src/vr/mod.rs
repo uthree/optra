@@ -61,6 +61,21 @@ impl Role {
 
     /// Rigs the calibration solves for, in `rig` order.
     pub const RIGS: [Role; 3] = [Role::Head, Role::LeftHand, Role::RightHand];
+
+    /// Sort key for showing devices in a stable, sensible order.
+    ///
+    /// Rigs are numbered in the order their keypoints happen to be seen, which
+    /// is whatever the walk produced first; a list in that order rearranges
+    /// itself between runs for no reason the user can see.
+    pub fn order(self) -> u8 {
+        match self {
+            Role::Head => 0,
+            Role::LeftHand => 1,
+            Role::RightHand => 2,
+            Role::Tracker => 3,
+            Role::Other => 4,
+        }
+    }
 }
 
 /// One device at one instant.

@@ -593,10 +593,31 @@ configuration and asks for more rotation variety.
 ### 8.3 Latency estimation
 
 USB webcams have tens of milliseconds of unmodelled delay, and it differs per
-device. Optra cross-correlates the head-keypoint image trajectory of each camera
-against the HMD trajectory projected into that camera, and takes the lag
-maximizing correlation as that camera's latency offset. This uses the data
-already collected for extrinsics, so it costs the user nothing extra.
+device — a cheap camera and a good one in the same room are not looking at the
+same instant. Nothing reports the number, so it has to be measured, and the
+walk already recorded for the extrinsics is enough to do it.
+
+The measurement is a search rather than a correlation. For a range of candidate
+delays, the recorded device track is sampled that far *back* from each frame's
+timestamp, reprojected through the solved camera, and the delay that explains
+the pixels best wins; a parabola through the winner and its neighbours puts the
+answer between the two-millisecond grid points. That is the same objective the
+bundle refinement minimizes, scanned over a time shift, so it reuses the
+geometry instead of introducing a separate notion of similarity.
+
+It therefore has to happen *after* the first refinement, since it needs cameras
+to reproject through. Once the delays are known the fit is run again against
+the corrected timestamps, which is what turns the measurement into accuracy
+rather than a number on a screen.
+
+A delay is invisible against a stationary head, so each estimate carries how
+much worse the fit gets thirty milliseconds either side of the answer,
+**measured in pixels** rather than as a fraction of the best fit. The relative
+form is unusable: a nearly exact fit makes any ratio enormous, so a user who
+stood still would be reported as the most confident result of all. Below about
+a pixel the rise is indistinguishable from keypoint noise, and the estimate is
+shown but not applied — a delay guessed from a flat curve is worse than no
+delay at all.
 
 ## 9. Fusion
 

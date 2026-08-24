@@ -129,6 +129,7 @@ fn a_solved_room_lays_out() {
         sightings: 400,
         coverage: 0.6,
         spread,
+        latency: None,
     };
 
     let room = RoomCalibration {

@@ -7,6 +7,7 @@
 //! removes the bias.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use nalgebra::{Point3, Vector3};
@@ -20,6 +21,7 @@ use crate::geometry::resection::{Correspondence, ResectionOptions, resect};
 use crate::paths;
 use crate::vr::Role;
 
+use super::latency::{self, Estimate, LatencyOptions};
 use super::recorder::{Recording, Rig};
 
 #[derive(Debug, Clone)]
@@ -28,6 +30,10 @@ pub struct SolveOptions {
     pub refine: RefineOptions,
     /// Sightings a camera needs before it is worth solving at all.
     pub min_samples: usize,
+    pub latency: LatencyOptions,
+    /// Measure each camera latency and fit again against the corrected
+    /// timestamps.
+    pub estimate_latency: bool,
 }
 
 impl Default for SolveOptions {
@@ -44,6 +50,8 @@ impl Default for SolveOptions {
             },
             refine: RefineOptions::default(),
             min_samples: 40,
+            latency: LatencyOptions::default(),
+            estimate_latency: true,
         }
     }
 }
@@ -62,6 +70,8 @@ pub struct CameraCalibration {
     /// How far the correspondences were from lying in a plane when this camera
     /// was resected. Near zero and the answer rests on nothing.
     pub spread: f64,
+    /// How far behind this camera is, when the walk was brisk enough to tell.
+    pub latency: Option<Estimate>,
 }
 
 impl CameraCalibration {
@@ -224,28 +234,60 @@ pub fn solve(
         .map(|(index, id)| (id.as_str(), index))
         .collect();
 
-    let mut sightings = Vec::new();
-    for trail in &recording.cameras {
-        let Some(camera) = index.get(trail.camera.as_str()).copied() else {
-            continue;
-        };
+    let offsets = vec![Vector3::zeros(); recording.rigs.len()];
+    let mut lags = vec![Duration::ZERO; ids.len()];
 
-        for sample in &trail.samples {
-            let Some(anchor) = recording.tracks[sample.rig].at(sample.at) else {
+    let mut sightings = pair(recording, &index, &lags);
+    let mut refined = refine(&seeds, &offsets, &sightings, &options.refine);
+
+    // Each camera hands over its frames a little late, and by a different
+    // amount. Measuring that needs cameras to reproject through, which is why
+    // it happens here rather than before the first fit — and once it is known,
+    // fitting again against the corrected timestamps is what turns it from a
+    // number into accuracy.
+    let mut estimates = vec![None; ids.len()];
+    if options.estimate_latency {
+        for (slot, id) in ids.iter().enumerate() {
+            let Some(trail) = recording.trail(id) else {
                 continue;
             };
-            sightings.push(Sighting {
-                camera,
-                rig: sample.rig,
-                anchor,
-                pixel: sample.pixel,
-                weight: weight_of(recording.rigs[sample.rig], sample.confidence),
-            });
+
+            let estimate = latency::estimate(
+                &refined.cameras[slot],
+                trail,
+                recording,
+                &refined.offsets,
+                &options.latency,
+            );
+
+            match estimate {
+                // A walk too slow to leave a mark produces a confident-looking
+                // minimum in noise. Applying that is worse than applying
+                // nothing, so it is reported and not used.
+                Some(estimate) if estimate.is_confident() => {
+                    tracing::info!(
+                        camera = %id,
+                        latency_ms = estimate.millis(),
+                        "measured the camera latency"
+                    );
+                    lags[slot] = estimate.latency;
+                }
+                Some(estimate) => tracing::warn!(
+                    camera = %id,
+                    latency_ms = estimate.millis(),
+                    sharpness = estimate.sharpness,
+                    "the walk was too slow to measure this camera's latency"
+                ),
+                None => {}
+            }
+            estimates[slot] = estimate;
+        }
+
+        if lags.iter().any(|lag| !lag.is_zero()) {
+            sightings = pair(recording, &index, &lags);
+            refined = refine(&seeds, &offsets, &sightings, &options.refine);
         }
     }
-
-    let offsets = vec![Vector3::zeros(); recording.rigs.len()];
-    let refined = refine(&seeds, &offsets, &sightings, &options.refine);
 
     let cameras = ids
         .into_iter()
@@ -257,6 +299,7 @@ pub fn solve(
             sightings: refined.per_camera[slot].sightings,
             coverage: coverages[slot],
             spread: spreads[slot],
+            latency: estimates[slot],
         })
         .collect();
 
@@ -273,6 +316,37 @@ pub fn solve(
         used: sightings.len() - refined.rejected,
         solved_at: chrono::Local::now().to_rfc3339(),
     })
+}
+
+/// Pairs each recorded pixel with where its device was when the frame was
+/// actually exposed, which is `lag` before the timestamp it carries.
+fn pair(recording: &Recording, index: &HashMap<&str, usize>, lags: &[Duration]) -> Vec<Sighting> {
+    let mut out = Vec::new();
+
+    for trail in &recording.cameras {
+        let Some(camera) = index.get(trail.camera.as_str()).copied() else {
+            continue;
+        };
+        let lag = lags.get(camera).copied().unwrap_or(Duration::ZERO);
+
+        for sample in &trail.samples {
+            let Some(when) = sample.at.checked_sub(lag) else {
+                continue;
+            };
+            let Some(anchor) = recording.tracks[sample.rig].at(when) else {
+                continue;
+            };
+            out.push(Sighting {
+                camera,
+                rig: sample.rig,
+                anchor,
+                pixel: sample.pixel,
+                weight: weight_of(recording.rigs[sample.rig], sample.confidence),
+            });
+        }
+    }
+
+    out
 }
 
 /// A starting field of view for a lens kind, in degrees.
