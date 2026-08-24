@@ -466,6 +466,14 @@ SteamVR does not report its own exit through this interface, so the headset
 ceasing to be connected for a few seconds is what triggers dropping the runtime
 and looking for it again.
 
+The connection is a *process* singleton, not a handle. `VR_InitInternal` and
+`VR_ShutdownInternal` act on the process, so a second connection shares the
+first one's state and whichever is dropped first invalidates the function table
+both are holding; the survivor then calls through a dangling pointer. Optra
+therefore refuses a second connection outright, and the refusal releases its
+flag so that a link retrying while SteamVR is down still recovers when it comes
+back up.
+
 ### 8.1 What is solved
 
 Per camera: intrinsics `K` (fx, fy, cx, cy), distortion coefficients under that

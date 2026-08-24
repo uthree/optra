@@ -3,11 +3,23 @@
 //! Ignored by default: they need SteamVR running with a headset. Run one with
 //! `cargo test --test vr -- --ignored --nocapture <name>`.
 
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use optra::config::VrConfig;
 use optra::vr::{LinkState, Role, VrLink, api};
 use optra::worker::Supervisor;
+
+/// OpenVR is a process-wide singleton, so these tests must not overlap. The
+/// harness runs tests in parallel by default, and a second connection in one
+/// process is exactly what the runtime refuses.
+static EXCLUSIVE: Mutex<()> = Mutex::new(());
+
+fn exclusive() -> MutexGuard<'static, ()> {
+    EXCLUSIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[test]
 #[ignore = "requires a SteamVR installation"]
@@ -23,6 +35,7 @@ fn finds_the_runtime() {
 #[test]
 #[ignore = "requires SteamVR to be running"]
 fn reads_poses_from_a_running_runtime() {
+    let _guard = exclusive();
     let runtime = api::Runtime::connect().expect("SteamVR should be running");
     println!("runtime: {}", runtime.path().display());
 
@@ -75,6 +88,7 @@ fn reads_poses_from_a_running_runtime() {
 #[test]
 #[ignore = "requires SteamVR to be running"]
 fn the_link_thread_records_a_usable_history() {
+    let _guard = exclusive();
     let mut supervisor = Supervisor::new();
     let mut link = VrLink::default();
 
@@ -97,6 +111,11 @@ fn the_link_thread_records_a_usable_history() {
         stats.state, stats.devices, stats.measured_hz, stats.samples
     );
     assert_eq!(stats.state, LinkState::Connected);
+    assert!(
+        stats.samples > 50,
+        "only {} samples in a second; the link thread stalled",
+        stats.samples
+    );
     assert!(
         stats.measured_hz > 30.0,
         "sampling ran at only {:.1} Hz",

@@ -18,6 +18,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 use libloading::Library;
@@ -120,6 +121,16 @@ type ShutdownInternal = unsafe extern "C" fn();
 type GetGenericInterface = unsafe extern "C" fn(*const c_char, *mut i32) -> isize;
 type InitErrorDescription = unsafe extern "C" fn(i32) -> *const c_char;
 
+/// Whether this process already holds a connection.
+///
+/// `VR_InitInternal` and `VR_ShutdownInternal` act on the *process*, not on a
+/// handle: a second connection shares the first one's state, and whichever is
+/// dropped first invalidates the function table both of them are holding. The
+/// survivor then calls through a dangling pointer, which is an access violation
+/// rather than an error. Making a second connection a refusal keeps that
+/// impossible.
+static CONNECTED: AtomicBool = AtomicBool::new(false);
+
 /// A live connection to the OpenVR runtime.
 ///
 /// Not `Send`: OpenVR expects to be driven from the thread that initialized it,
@@ -133,9 +144,14 @@ pub struct Runtime {
 
 impl Runtime {
     /// Loads `openvr_api.dll` and initializes it as a background application.
+    ///
+    /// Fails if this process is already connected; see [`CONNECTED`].
     pub fn connect() -> Result<Self> {
-        let mut attempts = Vec::new();
+        if CONNECTED.swap(true, Ordering::SeqCst) {
+            bail!("this process is already connected to SteamVR");
+        }
 
+        let mut attempts = Vec::new();
         for candidate in candidates() {
             match Self::open(&candidate) {
                 Ok(runtime) => return Ok(runtime),
@@ -143,6 +159,7 @@ impl Runtime {
             }
         }
 
+        CONNECTED.store(false, Ordering::SeqCst);
         if attempts.is_empty() {
             bail!("openvr_api.dll was not found; is SteamVR installed?");
         }
@@ -286,6 +303,8 @@ impl Drop for Runtime {
                 shutdown();
             }
         }
+
+        CONNECTED.store(false, Ordering::SeqCst);
     }
 }
 
@@ -379,5 +398,26 @@ mod tests {
     fn looking_for_the_runtime_does_not_panic() {
         let _ = is_installed();
         assert!(!candidates().is_empty());
+    }
+
+    /// A refused connection has to release the process-wide flag, or every
+    /// later attempt reports "already connected" and the link never recovers
+    /// once SteamVR does start.
+    #[test]
+    fn a_refused_connection_can_be_retried() {
+        let Err(first) = Runtime::connect() else {
+            // SteamVR is running here, so there is nothing to refuse. The
+            // guard itself is covered by tests/vr.rs.
+            return;
+        };
+        let Err(second) = Runtime::connect() else {
+            return;
+        };
+
+        assert_eq!(
+            first.to_string(),
+            second.to_string(),
+            "the second attempt should fail the same way, not for holding a flag"
+        );
     }
 }

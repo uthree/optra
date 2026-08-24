@@ -119,9 +119,13 @@ unlike cameras and recovers their positions to within 3 mm and the head offset
 to within 3 mm, including a run with a camera blocked for half the walk and one
 keypoint in twelve thrown somewhere else.
 
-The SteamVR link is written and connects; what it does once connected still
-needs a headset to check. The remaining pieces are the correspondence recorder,
-latency estimation, and the wizard UI around them.
+The SteamVR link is written and verified against a Quest 3: the headset and
+both controllers are read with correct classes, roles and poses. Testing it
+found that an OpenVR connection is a process singleton rather than a handle,
+which is now refused rather than crashed on; see [design.md](design.md).
+
+The remaining pieces are the correspondence recorder, latency estimation, and
+the wizard UI around them.
 
 ## M4 - Fusion
 
