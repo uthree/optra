@@ -816,8 +816,44 @@ deliberately:
 
 ### 9.4 Filtering and latency compensation
 
-Each joint runs a One Euro filter for jitter, followed by a constant-velocity
-Kalman filter used to predict forward by the measured end-to-end latency.
+Each joint runs a constant-velocity Kalman filter, followed by a One Euro filter
+for the residual jitter, and is predicted forward by the measured end-to-end
+latency.
+
+That order is the reverse of what this document first specified, and the reason
+is the prediction. Smoothing first and differentiating afterwards measures the
+velocity of the *smoothed* signal, which lags the real one, so every prediction
+would come out short by exactly the amount the smoothing lagged — the two stages
+would be fighting. Estimating the velocity first keeps it honest.
+
+The Kalman filter takes its measurement variance per frame from the
+triangulation's positional uncertainty (9.2), rather than from a rate chosen in
+advance. A joint two cameras suddenly disagree about is trusted less on that
+frame, automatically. The worst of the three axes is used for all three, which
+under-trusts the well-constrained directions and is the safe way round. Its
+process noise is expressed as an acceleration the model expects to be surprised
+by, so it can be reasoned about: a foot changes direction over roughly a tenth
+of a second at a couple of metres per second.
+
+The One Euro filter's cutoff opens with speed, so a motionless joint is smoothed
+hard — lag is invisible when nothing moves — and a moving one is barely smoothed,
+which is when lag is all that is visible. The speed it adapts on comes from the
+Kalman filter rather than from a low-passed finite difference; it is the same
+quantity, already estimated better.
+
+**The smoothing costs no latency.** A first-order low pass running on something
+moving steadily sits exactly its own time constant behind, which is a known
+quantity rather than an unknown one, so that time constant is added to the
+prediction horizon and paid straight back. What the smoothing does still cost is
+how quickly the output can follow a genuine change of direction, and that is the
+trade actually being made.
+
+A prediction is only as good as the velocity behind it, so the extrapolation is
+distance-limited: a velocity estimate that has gone wrong shows as a foot that
+stopped tracking rather than one that left the room. A joint missing for longer
+than a short patience has its filter discarded rather than resumed — after a
+second out of sight the user is somewhere else, and carrying the old velocity
+across the gap would fling the prediction.
 
 Latency budget (rough, 4 cameras at 720p):
 

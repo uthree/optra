@@ -99,6 +99,10 @@ impl Fitted {
         self.get(joint).map(|fitted| fitted.point)
     }
 
+    pub fn set(&mut self, joint: Joint, fitted: FittedJoint) {
+        self.joints[joint.index()] = Some(fitted);
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (Joint, FittedJoint)> + '_ {
         Joint::ALL
             .iter()

@@ -7,5 +7,6 @@
 
 pub mod align;
 pub mod bones;
+pub mod filter;
 pub mod fit;
 pub mod fuse;
