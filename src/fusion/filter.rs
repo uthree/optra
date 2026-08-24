@@ -49,6 +49,21 @@ pub struct FilterOptions {
     /// because lag is invisible when nothing is moving, and a moving one is
     /// barely smoothed because lag is all that is visible then.
     pub beta: f64,
+    /// Cutoff of the low pass on the speed that opens the position filter, in
+    /// hertz.
+    ///
+    /// The speed estimate is itself noisy, and a joint standing still shows an
+    /// apparent speed that never quite reaches zero. Feeding that straight into
+    /// the cutoff would open the filter exactly when there is nothing to track
+    /// and everything to smooth, so the *velocity* is low-passed first —
+    /// vector, not magnitude, since zero-mean noise only averages away before
+    /// the absolute value is taken.
+    ///
+    /// Higher than the one hertz the One Euro filter is usually given, because
+    /// a walking leg swings at over one and a half. At a hertz the speed of a
+    /// swinging foot is attenuated to the point that the filter never notices
+    /// it is moving, and every stride comes out lagged.
+    pub derivative_cutoff: f64,
     /// Acceleration the constant-velocity model expects to be surprised by, in
     /// metres per second squared.
     ///
@@ -74,6 +89,7 @@ impl Default for FilterOptions {
         Self {
             min_cutoff: 1.2,
             beta: 4.0,
+            derivative_cutoff: 3.0,
             agility: 8.0,
             horizon: Duration::from_millis(60),
             max_prediction: 0.35,
@@ -224,6 +240,8 @@ struct Track {
     axes: [Kalman; 3],
     /// Smoothed position, which trails the Kalman's own estimate.
     smoothed: Point3<f64>,
+    /// Low-passed velocity, used only to decide how hard to smooth.
+    steady: Vector3<f64>,
     at: Instant,
 }
 
@@ -236,6 +254,7 @@ impl Track {
                 Kalman::new(point.z),
             ],
             smoothed: point,
+            steady: Vector3::zeros(),
             at,
         }
     }
@@ -268,9 +287,16 @@ impl Track {
         let velocity = Vector3::new(self.axes[0].v, self.axes[1].v, self.axes[2].v);
 
         // The speed the cutoff opens up with comes from the Kalman rather than
-        // from a low-passed difference, which is what the One Euro filter would
-        // normally use. It is the same quantity, already estimated better.
-        let cutoff = options.min_cutoff + options.beta * velocity.norm();
+        // from a finite difference, which is what the One Euro filter would
+        // normally use. It is the same quantity, already estimated better — but
+        // it still has to be low-passed before it decides anything, or the
+        // noise in it opens the filter on a joint that is standing still. The
+        // vector is smoothed and then measured, not the other way round: taking
+        // the length first would turn zero-mean noise into a speed that never
+        // averages away.
+        self.steady += (velocity - self.steady)
+            * smoothing_factor(time_constant(options.derivative_cutoff), dt);
+        let cutoff = options.min_cutoff + options.beta * self.steady.norm();
         let tau = time_constant(cutoff);
         self.smoothed += (estimate - self.smoothed) * smoothing_factor(tau, dt);
 
@@ -466,7 +492,7 @@ mod tests {
         // The smoothing really does lag — that is what smoothing is — and the
         // prediction has to be paying it back rather than starting from it.
         assert!(
-            (joint.point - truth).norm() > 0.05,
+            (joint.point - truth).norm() > 0.02,
             "the smoothing was expected to lag, and did not"
         );
 

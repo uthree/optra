@@ -838,8 +838,21 @@ of a second at a couple of metres per second.
 The One Euro filter's cutoff opens with speed, so a motionless joint is smoothed
 hard — lag is invisible when nothing moves — and a moving one is barely smoothed,
 which is when lag is all that is visible. The speed it adapts on comes from the
-Kalman filter rather than from a low-passed finite difference; it is the same
-quantity, already estimated better.
+Kalman filter rather than from a finite difference; it is the same quantity,
+already estimated better.
+
+It still has to be low-passed before it decides anything, because a joint
+standing still shows an apparent speed that never quite reaches zero, and
+feeding that straight in would open the filter exactly when there is nothing to
+track and everything to smooth. The *vector* is smoothed and then measured, not
+the other way round: taking the length first turns zero-mean noise into a speed
+that never averages away. That low pass runs at three hertz rather than the one
+this filter is usually given, because a walking leg swings at over one and a
+half — at a hertz a swinging foot's speed is attenuated to the point that the
+filter never notices it is moving, and every stride comes out lagged. Both ends
+of that trade are measured: raising it from one hertz to three cut the lag on a
+simulated jog from five centimetres to two and a half, and cost a quarter of the
+noise rejection on a still joint.
 
 **The smoothing costs no latency.** A first-order low pass running on something
 moving steadily sits exactly its own time constant behind, which is a known

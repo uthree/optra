@@ -531,4 +531,3 @@ impl Noise {
         (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
     }
 }
-
