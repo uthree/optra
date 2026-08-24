@@ -41,6 +41,21 @@ impl Panel {
         }
     }
 
+    /// Whether the shell should put this panel's body in a scroll area.
+    ///
+    /// Almost every panel wants one: they are lists and tables that grow with
+    /// the number of cameras, models or joints, and a window shorter than the
+    /// content silently truncates it otherwise.
+    ///
+    /// The exceptions manage their own, because they have a header that has to
+    /// stay put while the body underneath moves — a filter that scrolls off
+    /// screen is a filter the user cannot reach. Scrolling those from here as
+    /// well would nest one scroll area inside another, and the wheel would then
+    /// belong to whichever the pointer happened to be over.
+    pub fn scrolls(self) -> bool {
+        !matches!(self, Panel::Cameras | Panel::Models | Panel::Log)
+    }
+
     /// One-line description shown under the panel heading.
     pub fn description(self) -> &'static str {
         match self {

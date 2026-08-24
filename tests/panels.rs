@@ -202,12 +202,11 @@ fn a_solved_room_lays_out() {
     supervisor.shutdown();
 }
 
-/// The tracking panel with a body in it, which is the state that carries all
-/// its formatting: coloured uncertainties, an inferred joint, a camera taken
-/// out of service, a half-measured skeleton. None of it is drawn on a machine
-/// with no room and no cameras, which is every machine a test runs on.
-#[test]
-fn a_tracked_body_lays_out() {
+/// A tracking stage with a body in it, holding every state that carries
+/// formatting: coloured uncertainties, an inferred joint, a camera taken out of
+/// service, a half-measured skeleton. None of it is drawn on a machine with no
+/// room and no cameras, which is every machine a test runs on.
+fn tracked_fusion() -> Fusion {
     use std::time::{Duration, Instant};
 
     use nalgebra::{Point3, Vector3};
@@ -320,6 +319,18 @@ fn a_tracked_body_lays_out() {
         warning: Some("cam1 disagrees with the others on 45% of the joints it sees".to_owned()),
     };
 
+    Fusion::detached(
+        stats,
+        Some(FusionFrame {
+            raw,
+            fitted,
+            filtered,
+        }),
+    )
+}
+
+#[test]
+fn a_tracked_body_lays_out() {
     let mut config = Config::default();
     let log = LogBuffer::default();
     let mut supervisor = Supervisor::new();
@@ -328,14 +339,7 @@ fn a_tracked_body_lays_out() {
     let mut vr = VrLink::default();
     let mut recorder = Recorder::default();
     let mut room = None;
-    let mut fusion = Fusion::detached(
-        stats,
-        Some(FusionFrame {
-            raw,
-            fitted,
-            filtered,
-        }),
-    );
+    let mut fusion = tracked_fusion();
     let mut panel = tracking::TrackingPanel::default();
 
     let ctx = egui::Context::default();
@@ -361,6 +365,103 @@ fn a_tracked_body_lays_out() {
             });
         });
         output.textures_delta.clear();
+    }
+
+    supervisor.shutdown();
+}
+
+/// A window shorter than the panel in it.
+///
+/// This is the failure the scroll area exists for, and it is invisible in a
+/// test that lays panels out against an unbounded screen: the content is drawn
+/// either way, and only a real window is short enough to cut it off. Every
+/// panel must either fit or scroll — what none of them may do is quietly run
+/// off the bottom, which is what they all did before `Panel::scrolls`.
+#[test]
+fn no_panel_spills_out_of_a_short_window() {
+    // Short enough that the wizard, the camera list and the 3D view all
+    // overrun it, and about as short as a user would ever drag the window.
+    const HEIGHT: f32 = 260.0;
+
+    let mut config = Config::default();
+    let log = LogBuffer::default();
+    let mut supervisor = Supervisor::new();
+    let mut capture = CaptureManager::default();
+    let mut pipeline = Pipeline::default();
+    let mut vr = VrLink::default();
+    let mut recorder = Recorder::default();
+    let mut room: Option<RoomCalibration> = None;
+    let mut fusion = tracked_fusion();
+
+    let mut cameras_panel = cameras::CamerasPanel::default();
+    let mut models_panel = models::ModelsPanel::default();
+    let mut calibration_panel = calibration::CalibrationPanel::default();
+    let mut tracking_panel = tracking::TrackingPanel::default();
+    let mut output_panel = output::OutputPanel;
+    let mut log_panel = log::LogPanel::default();
+
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1000.0, HEIGHT),
+        )),
+        ..egui::RawInput::default()
+    };
+
+    for panel in Panel::ALL {
+        let mut used = 0.0;
+
+        // Twice, so the collapsing sections are open on the pass that counts.
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut panel_ctx = PanelContext {
+                        config: &mut config,
+                        log: &log,
+                        supervisor: &mut supervisor,
+                        capture: &mut capture,
+                        pipeline: &mut pipeline,
+                        vr: &mut vr,
+                        recorder: &mut recorder,
+                        room: &mut room,
+                        fusion: &mut fusion,
+                        fusion_problem: None,
+                        dirty: false,
+                    };
+
+                    // The same decision the shell makes, and the reason this
+                    // test is worth having: a panel added without thinking
+                    // about it gets scrolled, and one that opts out has to
+                    // have brought its own.
+                    let mut draw = |ui: &mut egui::Ui| match panel {
+                        Panel::Cameras => cameras_panel.ui(ui, &mut panel_ctx),
+                        Panel::Models => models_panel.ui(ui, &mut panel_ctx),
+                        Panel::Calibration => calibration_panel.ui(ui, &mut panel_ctx),
+                        Panel::Tracking => tracking_panel.ui(ui, &mut panel_ctx),
+                        Panel::Output => output_panel.ui(ui, &mut panel_ctx),
+                        Panel::Log => log_panel.ui(ui, &mut panel_ctx),
+                    };
+
+                    if panel.scrolls() {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| draw(ui));
+                    } else {
+                        draw(ui);
+                    }
+
+                    used = ui.min_rect().height();
+                });
+            });
+            output.textures_delta.clear();
+        }
+
+        assert!(
+            used <= HEIGHT,
+            "{} wanted {used} px of a {HEIGHT} px window, so the bottom of it is unreachable",
+            panel.title()
+        );
     }
 
     supervisor.shutdown();

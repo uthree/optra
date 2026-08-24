@@ -1038,7 +1038,38 @@ The quality of the profile in force is shown whenever the panel is open, not
 only in the minute after a solve. A user whose feet are wrong needs to be able
 to look it up.
 
-### 12.2 Laying panels out in tests
+### 12.2 Room to be short
+
+Every panel here is a stack of tables that grows with the room: one row per
+camera, per joint, per bone, per model. On a window the user has dragged small,
+or on a laptop screen, the bottom of that stack is simply not on screen — and
+in an immediate-mode toolkit nothing says so. The content is laid out past the
+edge and clipped, and the panel looks complete.
+
+So the shell puts the panel body in a scroll area rather than leaving each
+panel to remember. The heading stays outside it: scrolling away the label that
+says which panel this is, in order to reach the bottom of it, helps nobody.
+Three panels opt out through `Panel::scrolls` and bring their own, because they
+have a header — a device picker, a log level filter — that has to stay put
+while the body underneath moves. Scrolling those from the shell as well would
+nest one scroll area inside another, and a wheel notch would then belong to
+whichever of the two the pointer happened to be over.
+
+The 3D viewport needs one more thing, for the same reason in reverse. It asks
+for a fixed height, and a fixed height in a short window is the whole window:
+the tables that explain the picture end up below the fold, which is the worst
+of both, since those tables are half the reason to be looking. It therefore
+takes at most a little over half of what is visible, measured from the clip
+rect rather than from the available space — inside a scroll area the latter is
+the length of the entire scrollable body, which is the one number that says
+nothing about how tall the window is.
+
+The viewport also *takes* the scroll delta it zooms with instead of merely
+reading it, since the scroll area around it reads the same delta once the panel
+is done. Left in place, one notch of the wheel would be spent twice: zooming
+the scene and scrolling it out from under the pointer at the same time.
+
+### 12.3 Laying panels out in tests
 
 egui is immediate mode, so a panel that indexes past the end of a list or hands
 a widget a value it will not accept fails when it is *drawn* — and a panel
@@ -1054,6 +1085,13 @@ and one bad one, and a tracked body with a joint the fit had to infer, a camera
 taken out of service, and a half-measured skeleton. The tracking panel reads
 everything from the fusion stage's channel, so `Fusion::detached` builds one
 with no thread behind it purely to make that reachable.
+
+One thing a context with no window cannot catch is the panel that overruns the
+window, because there is no window for it to overrun: the content is laid out
+either way and only a real screen edge cuts it off. That case gets a screen
+rect of its own — 260 px tall, about as short as anyone would drag it — and
+asserts that no panel asks for more vertical space than it was given. Before
+the scroll area the tracking panel wanted 508 px of it.
 
 ## 13. Configuration and profiles
 

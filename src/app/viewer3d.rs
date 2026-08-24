@@ -25,6 +25,10 @@ const NEAR: f64 = 0.05;
 /// does not look like a fisheye photograph of itself.
 const FOV: f64 = 50.0;
 
+/// Height below which the viewport is not worth shrinking any further: past
+/// this a standing body no longer fits in it and the view stops being a view.
+const MIN_VIEWPORT_HEIGHT: f32 = 170.0;
+
 /// A line to draw, in world coordinates.
 pub struct Segment {
     pub from: Point3<f64>,
@@ -196,8 +200,20 @@ impl Viewer3d {
         self.distance = (radius * 2.6).clamp(2.0, 30.0) as f32;
     }
 
+    /// Draws the scene, `height` tall where the window allows it.
+    ///
+    /// On a short window it takes less. A viewport that keeps its full height
+    /// regardless pushes everything below it past the bottom of a scroll area,
+    /// and the tables under these views are half the reason to look at them —
+    /// a smaller picture beats a picture with nothing next to it.
     pub fn show(&mut self, ui: &mut Ui, scene: &Scene, height: f32) -> Response {
         let width = ui.available_width().max(120.0);
+        // The clip rect rather than the available space: inside a scroll area
+        // the latter is the length of the whole scrollable body, which is the
+        // one measurement that says nothing about how tall the window is.
+        let height = height
+            .min(ui.clip_rect().height() * 0.55)
+            .max(MIN_VIEWPORT_HEIGHT);
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
 
@@ -210,7 +226,15 @@ impl Viewer3d {
             self.pitch = (self.pitch + drag.y * 0.008).clamp(-1.45, 1.45);
         }
         if response.hovered() {
-            let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+            // Taken, not merely read: the viewport usually sits inside a scroll
+            // area, which looks at the same delta once the panel is finished.
+            // Leaving it in place would spend one wheel notch twice, zooming
+            // the scene and scrolling it out from under the pointer together.
+            let scroll = ui.input_mut(|input| {
+                let scroll = input.smooth_scroll_delta;
+                input.smooth_scroll_delta = Vec2::ZERO;
+                scroll.y
+            });
             if scroll != 0.0 {
                 self.distance = (self.distance * (1.0 - scroll * 0.0015)).clamp(0.5, 40.0);
             }

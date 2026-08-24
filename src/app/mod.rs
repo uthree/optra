@@ -262,6 +262,34 @@ impl OptraApp {
         });
     }
 
+    /// Draws the selected panel, and reports whether it changed the config.
+    fn panel_body(&mut self, ui: &mut egui::Ui, panel: Panel) -> bool {
+        let mut panel_ctx = PanelContext {
+            config: &mut self.config,
+            log: &self.log,
+            supervisor: &mut self.supervisor,
+            capture: &mut self.capture,
+            pipeline: &mut self.pipeline,
+            vr: &mut self.vr,
+            recorder: &mut self.recorder,
+            room: &mut self.room,
+            fusion: &mut self.fusion,
+            fusion_problem: self.fusion_problem.as_deref(),
+            dirty: false,
+        };
+
+        match panel {
+            Panel::Cameras => self.cameras.ui(ui, &mut panel_ctx),
+            Panel::Models => self.models.ui(ui, &mut panel_ctx),
+            Panel::Calibration => self.calibration.ui(ui, &mut panel_ctx),
+            Panel::Tracking => self.tracking.ui(ui, &mut panel_ctx),
+            Panel::Output => self.output.ui(ui, &mut panel_ctx),
+            Panel::Log => self.log_panel.ui(ui, &mut panel_ctx),
+        }
+
+        panel_ctx.dirty
+    }
+
     fn failure_banner(&mut self, ui: &mut egui::Ui) {
         if self.failures.is_empty() {
             return;
@@ -300,34 +328,21 @@ impl eframe::App for OptraApp {
         let panel = self.config.ui.panel;
         let mut dirty = false;
         egui::CentralPanel::default().show(ui, |ui| {
+            // The heading stays outside the scroll area: it is what tells the
+            // user which panel they are looking at, and scrolling it away to
+            // reach the bottom of a long one is no help to anybody.
             ui.heading(panel.title());
             ui.label(RichText::new(panel.description()).weak());
             ui.separator();
 
-            let mut panel_ctx = PanelContext {
-                config: &mut self.config,
-                log: &self.log,
-                supervisor: &mut self.supervisor,
-                capture: &mut self.capture,
-                pipeline: &mut self.pipeline,
-                vr: &mut self.vr,
-                recorder: &mut self.recorder,
-                room: &mut self.room,
-                fusion: &mut self.fusion,
-                fusion_problem: self.fusion_problem.as_deref(),
-                dirty: false,
+            dirty = if panel.scrolls() {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.panel_body(ui, panel))
+                    .inner
+            } else {
+                self.panel_body(ui, panel)
             };
-
-            match panel {
-                Panel::Cameras => self.cameras.ui(ui, &mut panel_ctx),
-                Panel::Models => self.models.ui(ui, &mut panel_ctx),
-                Panel::Calibration => self.calibration.ui(ui, &mut panel_ctx),
-                Panel::Tracking => self.tracking.ui(ui, &mut panel_ctx),
-                Panel::Output => self.output.ui(ui, &mut panel_ctx),
-                Panel::Log => self.log_panel.ui(ui, &mut panel_ctx),
-            }
-
-            dirty = panel_ctx.dirty;
         });
 
         if dirty {
