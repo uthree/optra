@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use nalgebra::{Point2, Point3, Vector3};
+use nalgebra::{Point3, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{CameraConfig, LensKind};
@@ -514,7 +514,7 @@ fn weight_of(rig: Rig, confidence: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+    use nalgebra::{Isometry3, Point2, Translation3, UnitQuaternion};
 
     use super::*;
 
