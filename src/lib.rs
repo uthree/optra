@@ -4,6 +4,7 @@
 //! exercised by tests without a window.
 
 pub mod app;
+pub mod calib;
 pub mod capture;
 pub mod config;
 pub mod geometry;

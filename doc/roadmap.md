@@ -99,11 +99,12 @@ that one is a hand-edited entry in the user manifest for now.
 - OpenVR background client reading HMD and controller poses. Done: the runtime
   is loaded at run time, poses are sampled into a short history, and the
   calibration panel shows the live device list.
-- Correspondence recorder for the calibration walk.
+- Correspondence recorder for the calibration walk. Done.
 - Lens models: radial-tangential and equidistant fisheye, selected per camera.
-- DLT resection with RANSAC, RQ decomposition into `K`, `R`, `t`.
+  Done.
+- DLT resection with RANSAC, RQ decomposition into `K`, `R`, `t`. Done.
 - Levenberg-Marquardt bundle refinement on angular residuals, including
-  distortion and the HMD-to-head-keypoint offset.
+  distortion and the HMD-to-head-keypoint offset. Done.
 - Per-camera latency estimation by cross-correlation.
 - Calibration wizard UI: guidance, live coverage map, residual reporting,
   degenerate-configuration detection, profile save/load.
@@ -131,8 +132,13 @@ turned up two things, both recorded in [design.md](design.md):
   `worker::timing`: a raised timer resolution for the process, and a ticker
   that keeps a schedule rather than an interval.
 
-The remaining pieces are the correspondence recorder, latency estimation, and
-the wizard UI around them.
+The recorder and the solver are written: a walk is turned into a room profile
+by `calib::recorder` and `calib::solve`, with `tests/calibration.rs` running a
+synthetic recording through the whole path and recovering four camera positions
+to within 5 mm and every rig offset to within 5 mm.
+
+What is left needs a person in the room: the wizard UI, latency estimation, and
+the 3D viewport.
 
 ## M4 - Fusion
 

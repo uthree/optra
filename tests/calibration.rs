@@ -308,3 +308,180 @@ fn a_messy_walk_still_calibrates() {
         result.offsets[0]
     );
 }
+
+/// The recorder-to-solver path, on a walk built from the same room as above.
+///
+/// The maths is already covered; what this exercises is the glue — rig
+/// indexing, pairing each pixel with the pose at its own timestamp, and the
+/// per-camera reporting that comes back out.
+#[test]
+fn a_recording_solves_into_a_room() {
+    use std::time::{Duration, Instant};
+
+    use optra::calib::recorder::{CameraTrail, Recording, Rig, Sample};
+    use optra::calib::{SolveOptions, solve};
+    use optra::config::{CameraConfig, LensKind};
+    use optra::models::keypoints::Joint;
+    use optra::vr::{Role, Track};
+
+    let truth = room();
+    let start = Instant::now();
+
+    // Three rigs, each with its own offset from the device it hangs off.
+    let rigs = vec![
+        Rig {
+            role: Role::Head,
+            joint: Joint::Head,
+        },
+        Rig {
+            role: Role::LeftHand,
+            joint: Joint::LeftWrist,
+        },
+        Rig {
+            role: Role::RightHand,
+            joint: Joint::RightWrist,
+        },
+    ];
+    let offsets = [
+        HEAD_OFFSET,
+        Vector3::new(-0.02, 0.03, 0.09),
+        Vector3::new(0.02, 0.03, 0.09),
+    ];
+
+    // Where each device was, sampled far more often than the cameras run.
+    let mut tracks = vec![Track::default(); rigs.len()];
+    let mut anchors: Vec<Vec<(Instant, Isometry3<f64>)>> = vec![Vec::new(); rigs.len()];
+
+    for (step, head) in walk().into_iter().enumerate() {
+        let at = start + Duration::from_millis(step as u64 * 8);
+
+        // The hands swing relative to the head, so their tracks are not a
+        // translated copy of it.
+        let phase = step as f64 * 0.19;
+        let devices = [
+            head,
+            head * Isometry3::from_parts(
+                Translation3::new(-0.25, -0.45 + 0.3 * phase.sin(), -0.2),
+                UnitQuaternion::from_euler_angles(0.4 * phase.cos(), -0.6, 0.2),
+            ),
+            head * Isometry3::from_parts(
+                Translation3::new(0.25, -0.45 + 0.3 * (phase + 1.7).sin(), -0.2),
+                UnitQuaternion::from_euler_angles(0.4 * (phase + 1.1).cos(), 0.6, -0.2),
+            ),
+        ];
+
+        for (rig, device) in devices.into_iter().enumerate() {
+            tracks[rig].push(at, device);
+            anchors[rig].push((at, device));
+        }
+    }
+
+    // What each camera saw. Frames land between pose samples, which is the
+    // normal case and the reason the recorder interpolates at all.
+    let mut trails = Vec::new();
+    for (index, camera) in truth.iter().enumerate() {
+        let mut trail = CameraTrail::new(format!("cam{index}"));
+        trail.width = camera.intrinsics.width;
+        trail.height = camera.intrinsics.height;
+
+        for (rig, samples) in anchors.iter().enumerate() {
+            for (step, (at, _)) in samples.iter().enumerate() {
+                // Every third pose sample carries a camera frame, offset by
+                // three milliseconds so it never coincides with one.
+                if step % 3 != 0 || step + 1 >= samples.len() {
+                    continue;
+                }
+                let frame_at = *at + Duration::from_millis(3);
+                let Some(anchor) = tracks[rig].at(frame_at) else {
+                    continue;
+                };
+
+                let point = anchor * Point3::from(offsets[rig]);
+                let Some(pixel) = camera.project(point) else {
+                    continue;
+                };
+                if !inside(camera, pixel) {
+                    continue;
+                }
+
+                trail.record(Sample {
+                    at: frame_at,
+                    rig,
+                    pixel,
+                    confidence: 0.9,
+                });
+            }
+        }
+
+        trails.push(trail);
+    }
+
+    let recording = Recording {
+        rigs: rigs.clone(),
+        tracks,
+        cameras: trails,
+        duration: Duration::from_secs(20),
+    };
+
+    assert!(
+        recording.samples() > 500,
+        "the synthetic walk should be well seen, got {}",
+        recording.samples()
+    );
+    for (rig, spread) in recording.observability() {
+        assert!(
+            spread > 0.2,
+            "{} barely turned during the walk: {spread:.3}",
+            rig.label()
+        );
+    }
+
+    let configs: Vec<CameraConfig> = (0..truth.len())
+        .map(|index| CameraConfig {
+            id: format!("cam{index}"),
+            lens: if index == 2 {
+                LensKind::Wide
+            } else {
+                LensKind::Standard
+            },
+            ..CameraConfig::default()
+        })
+        .collect();
+
+    let solved = solve(&recording, &configs, &SolveOptions::default())
+        .expect("a clean recording should solve");
+
+    println!(
+        "solved {} cameras, rms {:.4} deg, {} of {} sightings used",
+        solved.cameras.len(),
+        solved.rms_degrees(),
+        solved.used,
+        solved.used + solved.rejected
+    );
+
+    assert_eq!(solved.cameras.len(), truth.len());
+    for (index, calibrated) in solved.cameras.iter().enumerate() {
+        let error = (calibrated.camera.position() - truth[index].position()).norm();
+        assert!(
+            error < 5e-3,
+            "{} is {error} m from where it really is",
+            calibrated.id
+        );
+        assert!(
+            calibrated.spread > 0.05,
+            "{} was solved from near-planar correspondences",
+            calibrated.id
+        );
+        assert!(calibrated.sightings > 100);
+    }
+
+    for (index, (rig, offset)) in solved.rigs.iter().enumerate() {
+        assert_eq!(*rig, rigs[index]);
+        assert!(
+            (offset - offsets[index]).norm() < 5e-3,
+            "{} offset came out {offset:?}, expected {:?}",
+            rig.label(),
+            offsets[index]
+        );
+    }
+}

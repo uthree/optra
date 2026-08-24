@@ -16,13 +16,15 @@ use std::time::{Duration, Instant};
 
 use nalgebra::{Isometry3, Matrix3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
 use crate::config::VrConfig;
 use crate::worker::timing::Ticker;
 use crate::worker::{Shutdown, Supervisor};
 
 /// What a tracked device is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     Head,
     LeftHand,
@@ -173,6 +175,21 @@ impl VrChannel {
         interpolate(&history, role, at)
     }
 
+    /// Every snapshot taken after the given instant, oldest first.
+    ///
+    /// This is how a recording keeps a complete track without sampling the
+    /// runtime a second time: it asks for whatever has arrived since it last
+    /// looked. As long as it looks more often than the history window is long,
+    /// nothing is missed.
+    pub fn since(&self, after: Instant) -> Vec<Snapshot> {
+        self.history
+            .lock()
+            .iter()
+            .filter(|snapshot| snapshot.taken_at > after)
+            .cloned()
+            .collect()
+    }
+
     /// Whether a device is being tracked right now.
     pub fn is_tracking(&self, role: Role) -> bool {
         self.history
@@ -224,18 +241,126 @@ fn interpolate(history: &VecDeque<Snapshot>, role: Role, at: Instant) -> Option<
     }
 
     match (before, after) {
-        (Some((t0, a)), Some((t1, b))) => {
-            let span = t1.duration_since(t0).as_secs_f64();
-            if span <= f64::EPSILON {
-                return Some(a);
-            }
-            let fraction = at.duration_since(t0).as_secs_f64() / span;
-            Some(a.lerp_slerp(&b, fraction))
-        }
+        (Some(a), Some(b)) => Some(blend(a, b, at)),
         // Exactly at or after the last sample, with nothing following it: only
         // usable if it is the last sample itself.
         (Some((t0, a)), None) if t0 == at => Some(a),
         _ => None,
+    }
+}
+
+/// Blends two samples to the instant between them.
+///
+/// Position moves in a straight line and orientation along the shorter arc,
+/// which is what `lerp_slerp` does; over the few milliseconds between samples
+/// nothing more elaborate is measurable.
+fn blend(
+    (t0, a): (Instant, Isometry3<f64>),
+    (t1, b): (Instant, Isometry3<f64>),
+    at: Instant,
+) -> Isometry3<f64> {
+    let span = t1.duration_since(t0).as_secs_f64();
+    if span <= f64::EPSILON {
+        return a;
+    }
+    a.lerp_slerp(&b, at.duration_since(t0).as_secs_f64() / span)
+}
+
+/// One device's path, kept for as long as a recording needs it.
+///
+/// The link's own history is a few seconds deep, which is right for pairing a
+/// camera frame with a pose but useless once a calibration walk is over. A
+/// recording copies what it needs into one of these, so the whole walk can be
+/// re-read afterwards — which is what estimating each camera's latency needs,
+/// since that means asking where the headset was at a range of shifted times.
+#[derive(Debug, Clone, Default)]
+pub struct Track {
+    samples: Vec<(Instant, Isometry3<f64>)>,
+}
+
+impl Track {
+    /// Appends a sample. Samples that are not newer than the last one are
+    /// dropped, so the track stays sorted and free of repeats.
+    pub fn push(&mut self, at: Instant, pose: Isometry3<f64>) -> bool {
+        if let Some((last, _)) = self.samples.last()
+            && at <= *last
+        {
+            return false;
+        }
+        self.samples.push((at, pose));
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    pub fn first_at(&self) -> Option<Instant> {
+        self.samples.first().map(|(at, _)| *at)
+    }
+
+    pub fn last_at(&self) -> Option<Instant> {
+        self.samples.last().map(|(at, _)| *at)
+    }
+
+    pub fn span(&self) -> Duration {
+        match (self.first_at(), self.last_at()) {
+            (Some(first), Some(last)) => last.duration_since(first),
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// Where the device was at an instant, or `None` outside the track.
+    pub fn at(&self, at: Instant) -> Option<Isometry3<f64>> {
+        if self.samples.len() < 2 {
+            return self
+                .samples
+                .first()
+                .filter(|(t, _)| *t == at)
+                .map(|(_, pose)| *pose);
+        }
+
+        // The track is sorted, so the bracketing pair is one search away rather
+        // than a scan; a walk holds tens of thousands of samples and this is
+        // asked once per recorded keypoint.
+        match self.samples.binary_search_by(|(t, _)| t.cmp(&at)) {
+            Ok(index) => Some(self.samples[index].1),
+            Err(0) => None,
+            Err(index) if index == self.samples.len() => None,
+            Err(index) => Some(blend(self.samples[index - 1], self.samples[index], at)),
+        }
+    }
+
+    /// How well the device turned during the recording, from zero to one.
+    ///
+    /// The same question [`refine::offset_observability`] answers, asked of a
+    /// track rather than of sightings, so the wizard can warn while the user is
+    /// still walking rather than after the solve.
+    ///
+    /// [`refine::offset_observability`]: crate::geometry::refine::offset_observability
+    pub fn rotation_spread(&self) -> f64 {
+        if self.samples.is_empty() {
+            return 0.0;
+        }
+
+        let mut sum = Matrix3::zeros();
+        for (_, pose) in &self.samples {
+            sum += pose.rotation.to_rotation_matrix().into_inner();
+        }
+
+        let mean = sum / self.samples.len() as f64;
+        let smallest = mean
+            .svd(false, false)
+            .singular_values
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+
+        (1.0 - smallest).clamp(0.0, 1.0)
     }
 }
 

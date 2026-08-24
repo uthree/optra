@@ -523,7 +523,32 @@ roughly a factor of two.
    crouching, arms raised).
 2. Optra records tuples of `(HMD pose in W, head keypoint in image i, timestamp)`
    plus the same for controllers against wrist keypoints, which adds spread away
-   from the head's narrow height band.
+   from the head's narrow height band. The pose is taken at the instant the
+   frame was *captured*, interpolated between the samples either side of it,
+   not the latest pose at the moment the keypoints came out of inference —
+   those are tens of milliseconds apart and that is centimetres of error.
+
+   A **rig** is a device paired with a specific keypoint, not a device alone.
+   "The head keypoint" is not one point: a Halpe model reports a head centre
+   and a COCO model reports the nose, and those are several centimetres apart,
+   so two cameras running different models need two offsets. The rig set is
+   discovered during the walk rather than fixed in advance, and a rig that only
+   appears halfway through still receives the device track from before it
+   appeared — its keypoint may simply have been out of frame.
+
+   Three things are dropped rather than recorded. Keypoints below a confidence
+   threshold. Keypoints outside the frame, because a pose model asked about a
+   person half out of shot will place one there and that is the model guessing
+   rather than the camera seeing. And samples where the keypoint has barely
+   moved since the last one kept: a user standing still otherwise contributes
+   hundreds of near-identical rows that weight the solve toward one spot and
+   constrain nothing.
+
+   Coverage is counted per camera on a grid over its frame, and the whole
+   device track is kept rather than collapsed into one pose per sample —
+   estimating a camera's latency means asking where the headset was at a range
+   of shifted times, which a track that has already been sampled away cannot
+   answer.
 3. Initial per-camera solve: DLT resection from at least 6 well-spread
    correspondences yields the full projection matrix `P`, decomposed by RQ into
    `K`, `R`, `t`. RANSAC rejects frames with bad detections. For strongly

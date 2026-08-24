@@ -80,6 +80,38 @@ impl Joint {
         Joint::RightSmallToe,
     ];
 
+    /// The joint's name, matching the one used in `keypoints.toml`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Joint::Nose => "nose",
+            Joint::LeftEye => "left_eye",
+            Joint::RightEye => "right_eye",
+            Joint::LeftEar => "left_ear",
+            Joint::RightEar => "right_ear",
+            Joint::Head => "head",
+            Joint::Neck => "neck",
+            Joint::LeftShoulder => "left_shoulder",
+            Joint::RightShoulder => "right_shoulder",
+            Joint::LeftElbow => "left_elbow",
+            Joint::RightElbow => "right_elbow",
+            Joint::LeftWrist => "left_wrist",
+            Joint::RightWrist => "right_wrist",
+            Joint::Hip => "hip",
+            Joint::LeftHip => "left_hip",
+            Joint::RightHip => "right_hip",
+            Joint::LeftKnee => "left_knee",
+            Joint::RightKnee => "right_knee",
+            Joint::LeftAnkle => "left_ankle",
+            Joint::RightAnkle => "right_ankle",
+            Joint::LeftHeel => "left_heel",
+            Joint::RightHeel => "right_heel",
+            Joint::LeftBigToe => "left_big_toe",
+            Joint::RightBigToe => "right_big_toe",
+            Joint::LeftSmallToe => "left_small_toe",
+            Joint::RightSmallToe => "right_small_toe",
+        }
+    }
+
     /// Index into a dense per-joint array.
     pub fn index(self) -> usize {
         self as usize
