@@ -733,6 +733,32 @@ The 3D viewport is drawn with `egui`'s painter using a hand-rolled projection;
 the scene is a few hundred line segments, so a full wgpu render pass would be
 overkill.
 
+### 12.1 What the wizard refuses
+
+A calibration that comes out subtly wrong is worse than one that will not
+start. The tracking still works; it just puts the feet in the wrong place, and
+nothing about that points back to the walk that caused it. So the calibration
+panel lists what is standing in the way rather than greying a button out, warns
+about a walk that cannot be solved *while it is still running*, and reports the
+result as the several things that can be wrong with it rather than as one
+number: the residual, the per-camera coverage, and how far the correspondences
+were from lying in a plane. The last of those is the one that stays quiet: a
+flat walk can produce a small residual and a camera metres from where it really
+is.
+
+The quality of the profile in force is shown whenever the panel is open, not
+only in the minute after a solve. A user whose feet are wrong needs to be able
+to look it up.
+
+### 12.2 Laying panels out in tests
+
+egui is immediate mode, so a panel that indexes past the end of a list or hands
+a widget a value it will not accept fails when it is *drawn* — and a panel
+nobody is looking at is never drawn. `tests/panels.rs` runs the layout of every
+panel against a context with no window, which catches that in a test run rather
+than in front of someone in the middle of a calibration walk. It asserts
+nothing about appearance; what it asserts is that laying out does not panic.
+
 ## 13. Configuration and profiles
 
 `%APPDATA%/optra/`:

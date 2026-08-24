@@ -26,6 +26,10 @@ pub struct Config {
     pub capture: CaptureConfig,
     pub inference: InferenceConfig,
     pub vr: VrConfig,
+    /// Room profile to load at startup, by name. The calibration a room needs
+    /// belongs to the room rather than to the application, so only its name
+    /// lives here.
+    pub room: Option<String>,
     pub cameras: Vec<CameraConfig>,
 }
 

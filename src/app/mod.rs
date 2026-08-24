@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use egui::RichText;
 
+use crate::calib::{Recorder, RoomCalibration};
 use crate::capture::CaptureManager;
 use crate::config::Config;
 use crate::logging::LogBuffer;
@@ -24,6 +25,8 @@ pub struct OptraApp {
     capture: CaptureManager,
     pipeline: Pipeline,
     vr: VrLink,
+    recorder: Recorder,
+    room: Option<RoomCalibration>,
 
     cameras: panels::cameras::CamerasPanel,
     models: panels::models::ModelsPanel,
@@ -44,6 +47,19 @@ impl OptraApp {
         let mut capture = CaptureManager::default();
         let mut pipeline = Pipeline::default();
         let mut vr = VrLink::default();
+
+        // A room the user calibrated earlier. Its absence is not an error: the
+        // profile may have been deleted, and the application still runs.
+        let room = config
+            .room
+            .as_deref()
+            .and_then(|name| match RoomCalibration::load(name) {
+                Ok(room) => Some(room),
+                Err(error) => {
+                    tracing::warn!(profile = %name, "could not load the room profile: {error:#}");
+                    None
+                }
+            });
 
         vr.start(&config.vr, &mut supervisor);
 
@@ -66,6 +82,8 @@ impl OptraApp {
             capture,
             pipeline,
             vr,
+            recorder: Recorder::default(),
+            room,
             cameras: Default::default(),
             models: Default::default(),
             calibration: Default::default(),
@@ -226,6 +244,8 @@ impl eframe::App for OptraApp {
                 capture: &mut self.capture,
                 pipeline: &mut self.pipeline,
                 vr: &mut self.vr,
+                recorder: &mut self.recorder,
+                room: &mut self.room,
                 dirty: false,
             };
 
@@ -249,6 +269,7 @@ impl eframe::App for OptraApp {
 
     fn on_exit(&mut self) {
         // Cameras first: their threads are the ones the supervisor waits on.
+        self.recorder.stop();
         self.pipeline.stop();
         self.capture.stop();
         self.vr.stop();

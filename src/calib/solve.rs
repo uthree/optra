@@ -115,6 +115,28 @@ impl RoomCalibration {
         let path = paths::rooms_dir()?.join(format!("{name}.toml"));
         Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
     }
+
+    /// Profiles saved on this machine, for the UI to offer.
+    pub fn list() -> Vec<String> {
+        let Ok(directory) = paths::rooms_dir() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Vec::new();
+        };
+
+        let mut names: Vec<String> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "toml")
+            })
+            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        names
+    }
 }
 
 /// Solves every camera in the recording.

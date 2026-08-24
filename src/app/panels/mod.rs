@@ -64,6 +64,9 @@ pub struct PanelContext<'a> {
     pub capture: &'a mut crate::capture::CaptureManager,
     pub pipeline: &'a mut crate::pipeline::Pipeline,
     pub vr: &'a mut crate::vr::VrLink,
+    pub recorder: &'a mut crate::calib::Recorder,
+    /// The room profile in force, if one has been solved or loaded.
+    pub room: &'a mut Option<crate::calib::RoomCalibration>,
     /// Set by a panel when it changed the config, so the shell can save it.
     pub dirty: bool,
 }

@@ -107,7 +107,7 @@ that one is a hand-edited entry in the user manifest for now.
   distortion and the HMD-to-head-keypoint offset. Done.
 - Per-camera latency estimation by cross-correlation.
 - Calibration wizard UI: guidance, live coverage map, residual reporting,
-  degenerate-configuration detection, profile save/load.
+  degenerate-configuration detection, profile save/load. Done.
 - 3D viewport showing camera frusta, play-space bounds and the floor grid.
 
 **Done when:** a calibration run converges to a low RMS reprojection error and
@@ -137,8 +137,15 @@ by `calib::recorder` and `calib::solve`, with `tests/calibration.rs` running a
 synthetic recording through the whole path and recovering four camera positions
 to within 5 mm and every rig offset to within 5 mm.
 
-What is left needs a person in the room: the wizard UI, latency estimation, and
-the 3D viewport.
+The wizard is written and the whole path is reachable from the UI: check the
+prerequisites, record a walk with a live coverage map and a warning when the
+walk cannot be solved, solve on a worker thread, review, and save a room
+profile. `tests/panels.rs` lays every panel out headlessly, which is how an
+immediate-mode UI gets tested at all — a panel nobody is looking at is never
+drawn, and a layout bug in it waits until someone is mid-walk.
+
+What is left: latency estimation, the 3D viewport, and a walk through a real
+room.
 
 ## M4 - Fusion
 
