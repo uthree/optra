@@ -134,6 +134,10 @@ fn a_solved_room_lays_out() {
         coverage: 0.6,
         spread,
         latency: None,
+        range: 2.4,
+        // One camera that can see the legs and one that cannot, so both sides
+        // of the warning are drawn.
+        feet: if index == 0 { 0.9 } else { 0.05 },
     };
 
     let room = RoomCalibration {

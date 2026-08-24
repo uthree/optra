@@ -78,6 +78,19 @@ pinned down explicitly.
   driver convention (quaternion, right-handed) is used to avoid a lossy Euler
   round-trip.
 
+**The floor is inherited, not measured.** Every position Optra computes is
+expressed against the standing universe's floor, and nothing in the pipeline
+ever observes the floor itself -- the cameras are solved from headset positions,
+not from the room. So if SteamVR's floor is wrong, every camera, every joint and
+every tracker is wrong by the same amount, and nothing inside Optra can tell.
+The solve stays perfectly self-consistent, the reprojection error stays low, the
+reconstructed room looks right, and the feet come out half a metre underground.
+
+The check is therefore made directly, against the one number that gives it away:
+a worn headset below about 1.1 m is either a user lying on the floor or a room
+setup run with the headset on a desk. The latter is the easy mistake, and it
+produces exactly this symptom.
+
 Optra also sends `/tracking/trackers/head/{position,rotation}` from the live HMD
 pose so VRChat can align its own space to ours instead of relying on the user to
 nail the in-game calibration pose.

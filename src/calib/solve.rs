@@ -72,6 +72,19 @@ pub struct CameraCalibration {
     pub spread: f64,
     /// How far behind this camera is, when the walk was brisk enough to tell.
     pub latency: Option<Estimate>,
+    /// Typical distance from this camera to the person during the walk, in
+    /// metres.
+    #[serde(default)]
+    pub range: f64,
+    /// Fraction of the frames this camera saw a person in that also had a foot
+    /// in them.
+    ///
+    /// Nothing to do with the calibration, which never looks at a foot, and
+    /// everything to do with whether this camera can contribute to tracking
+    /// one. A camera can come out of the solve perfect and be aimed somewhere
+    /// that will never see a leg.
+    #[serde(default)]
+    pub feet: f32,
 }
 
 impl CameraCalibration {
@@ -79,6 +92,20 @@ impl CameraCalibration {
     /// of a user.
     pub fn rms_degrees(&self) -> f64 {
         self.rms.to_degrees()
+    }
+
+    /// What the reprojection error is worth in metres, at the distance the
+    /// person actually walked.
+    ///
+    /// The angle is the right quantity to *solve* on, because it compares
+    /// across cameras of different resolutions and fields of view. It is the
+    /// wrong quantity to *judge* on, because the same angle is a different
+    /// error at a different distance: half a degree is four millimetres for a
+    /// ceiling camera watching from four metres and one millimetre for a camera
+    /// on a desk a metre away. A user asking whether the calibration is good
+    /// enough is asking how far out their feet will be, and that is this.
+    pub fn error_metres(&self) -> Option<f64> {
+        (self.range > 0.0).then_some(self.rms * self.range)
     }
 }
 
@@ -166,6 +193,7 @@ pub fn solve(
     let mut seeds = Vec::new();
     let mut spreads = Vec::new();
     let mut coverages = Vec::new();
+    let mut feet = Vec::new();
 
     for trail in &recording.cameras {
         if trail.samples.len() < options.min_samples {
@@ -218,6 +246,11 @@ pub fn solve(
         ids.push(trail.camera.clone());
         spreads.push(resection.spread);
         coverages.push(trail.coverage.filled());
+        feet.push(if trail.frames > 0 {
+            trail.feet_seen as f32 / trail.frames as f32
+        } else {
+            0.0
+        });
         seeds.push(resection.camera);
     }
 
@@ -300,6 +333,8 @@ pub fn solve(
             coverage: coverages[slot],
             spread: spreads[slot],
             latency: estimates[slot],
+            range: median_range(&refined.cameras[slot], slot, &sightings, &refined.offsets),
+            feet: feet[slot],
         })
         .collect();
 
@@ -347,6 +382,32 @@ fn pair(recording: &Recording, index: &HashMap<&str, usize>, lags: &[Duration]) 
     }
 
     out
+}
+
+/// How far this camera typically was from the person, in metres.
+///
+/// A median, so that one sighting at the far wall does not decide it.
+fn median_range(
+    camera: &Camera,
+    slot: usize,
+    sightings: &[Sighting],
+    offsets: &[Vector3<f64>],
+) -> f64 {
+    let origin = camera.position();
+    let mut ranges: Vec<f64> = sightings
+        .iter()
+        .filter(|sighting| sighting.camera == slot)
+        .filter_map(|sighting| {
+            let offset = offsets.get(sighting.rig)?;
+            Some((sighting.anchor * Point3::from(*offset) - origin).norm())
+        })
+        .collect();
+
+    if ranges.is_empty() {
+        return 0.0;
+    }
+    ranges.sort_by(f64::total_cmp);
+    ranges[ranges.len() / 2]
 }
 
 /// A starting field of view for a lens kind, in degrees.

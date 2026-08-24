@@ -183,6 +183,16 @@ pub struct CameraTrail {
     pub height: u32,
     pub samples: Vec<Sample>,
     pub coverage: Coverage,
+    /// Frames this camera contributed, whether or not a sighting came of them.
+    pub frames: u64,
+    /// Of those, how many had a foot in them.
+    ///
+    /// Calibration does not use the feet at all — it works from the headset and
+    /// the controllers — so a camera can calibrate perfectly and still be
+    /// useless for the thing Optra exists to do. A camera on a desk pointed
+    /// across a room sees a person's head and hands all walk long and never
+    /// once sees where they are standing.
+    pub feet_seen: u64,
     /// Frames seen but not kept, and why.
     pub rejected_confidence: u64,
     pub rejected_stationary: u64,
@@ -198,6 +208,8 @@ impl CameraTrail {
             height: 0,
             samples: Vec::new(),
             coverage: Coverage::new(),
+            frames: 0,
+            feet_seen: 0,
             rejected_confidence: 0,
             rejected_stationary: 0,
             rejected_no_pose: 0,
@@ -476,6 +488,23 @@ impl State {
         let trail = &mut self.recording.cameras[camera];
         trail.width = frame.width;
         trail.height = frame.height;
+
+        // Counted whether or not this frame yields a sighting, because the
+        // question it answers is not about the calibration. The walk pins the
+        // cameras down from the headset and the controllers and never looks at
+        // a foot — so a camera can come out of this with a perfect calibration
+        // and still be pointed somewhere that will never see a leg.
+        if !frame.keypoints.is_empty() {
+            trail.frames += 1;
+            if frame
+                .keypoints
+                .iter()
+                .any(|(joint, keypoint)| joint.is_lower_body() && keypoint.confidence >= 0.5)
+            {
+                trail.feet_seen += 1;
+            }
+        }
+
         if trail.samples.len() >= config.max_per_camera {
             return;
         }

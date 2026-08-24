@@ -27,8 +27,17 @@ use super::PanelContext;
 const OBSERVABLE: f64 = 0.15;
 
 /// Reprojection error above which a calibration should not be trusted, in
-/// degrees. Roughly two pixels on a 70 degree 720p camera.
-const GOOD_RMS_DEGREES: f64 = 0.2;
+/// *metres at the distance the person walked*.
+///
+/// The solver works in angles, because that is what compares across cameras of
+/// different resolutions and fields of view. Judging in angles is a different
+/// matter: half a degree is four millimetres from a ceiling four metres up and
+/// one millimetre from a camera on a desk a metre away, and the user is asking
+/// how far out their feet will be, not how many pixels anything is.
+///
+/// A centimetre is about where a foot stops looking placed and starts looking
+/// approximate.
+const GOOD_ERROR_METRES: f64 = 0.01;
 
 #[derive(Default)]
 pub struct CalibrationPanel {
@@ -175,6 +184,8 @@ impl CalibrationPanel {
                 ui.add_space(6.0);
             }
         });
+
+        floor_check(ui, &snapshot);
     }
 
     // ---- idle -------------------------------------------------------------
@@ -368,6 +379,25 @@ impl CalibrationPanel {
                         .weak()
                         .small(),
                     );
+
+                    // Said here rather than after the solve, because it is not
+                    // something the solve can fix: the walk calibrates from the
+                    // headset and the controllers, so a camera that never sees
+                    // a foot still calibrates perfectly and is still no use for
+                    // tracking legs. Better to find out while the tripod is
+                    // still within reach.
+                    if let Some(feet) = feet_fraction(trail) {
+                        let poor = feet < 0.5;
+                        ui.label(
+                            RichText::new(format!("feet in {:.0}% of frames", feet * 100.0))
+                                .color(if poor {
+                                    Color32::from_rgb(230, 180, 90)
+                                } else {
+                                    Color32::from_rgb(120, 200, 120)
+                                })
+                                .small(),
+                        );
+                    }
                 });
                 ui.add_space(12.0);
             }
@@ -482,7 +512,14 @@ fn summary(
     viewer: &mut Viewer3d,
     walk: &[Point3<f64>],
 ) {
-    let good = room.rms_degrees() <= GOOD_RMS_DEGREES;
+    // The worst camera rather than the average, because a joint is only as
+    // well placed as the camera that saw it worst.
+    let error = room
+        .cameras
+        .iter()
+        .filter_map(|camera| camera.error_metres())
+        .fold(f64::NAN, f64::max);
+    let good = error.is_finite() && error <= GOOD_ERROR_METRES;
 
     ui.horizontal(|ui| {
         ui.strong("Result");
@@ -492,11 +529,16 @@ fn summary(
             } else {
                 Color32::from_rgb(230, 180, 90)
             },
-            format!("{:.3}\u{b0} RMS", room.rms_degrees()),
+            if error.is_finite() {
+                format!("about {:.1} cm out where you walked", error * 100.0)
+            } else {
+                format!("{:.3}\u{b0} RMS", room.rms_degrees())
+            },
         );
         ui.label(
             RichText::new(format!(
-                "{} of {} sightings used",
+                "{:.3}\u{b0} RMS, {} of {} sightings used",
+                room.rms_degrees(),
                 room.used,
                 room.used + room.rejected
             ))
@@ -507,17 +549,38 @@ fn summary(
     if !good {
         ui.colored_label(
             Color32::from_rgb(230, 180, 90),
-            "That is high enough to put the feet visibly wrong. Walking again, more slowly \
-                 and covering more of the room, is usually the fix.",
+            "That is enough to put the feet visibly wrong. Walking again, more slowly and \
+             covering more of the room, is usually the fix.",
+        );
+    }
+
+    // A separate complaint entirely, and one no amount of walking will fix.
+    let blind: Vec<&str> = room
+        .cameras
+        .iter()
+        .filter(|camera| camera.feet < 0.5)
+        .map(|camera| camera.id.as_str())
+        .collect();
+    if !blind.is_empty() {
+        ui.colored_label(
+            Color32::from_rgb(230, 180, 90),
+            format!(
+                "{} rarely had your feet in shot. The calibration is unaffected — it works \
+                 from the headset and the controllers — but a camera that cannot see a leg \
+                 cannot help track one. Aim it lower or move it back.",
+                blind.join(", ")
+            ),
         );
     }
 
     ui.add_space(6.0);
     egui::Grid::new(id)
-        .num_columns(6)
+        .num_columns(8)
         .striped(true)
         .show(ui, |ui| {
-            for heading in ["Camera", "Position", "RMS", "Coverage", "Spread", "Latency"] {
+            for heading in [
+                "Camera", "Position", "Error", "Distance", "Coverage", "Feet", "Spread", "Latency",
+            ] {
                 ui.strong(heading);
             }
             ui.end_row();
@@ -528,16 +591,33 @@ fn summary(
                 let p = camera.camera.position();
                 ui.label(format!("{:.2}, {:.2}, {:.2}", p.x, p.y, p.z));
 
+                let error = camera.error_metres();
                 ui.colored_label(
-                    if camera.rms_degrees() <= GOOD_RMS_DEGREES {
+                    if error.is_some_and(|error| error <= GOOD_ERROR_METRES) {
                         Color32::from_rgb(120, 200, 120)
                     } else {
                         Color32::from_rgb(230, 180, 90)
                     },
-                    format!("{:.3}\u{b0}", camera.rms_degrees()),
+                    match error {
+                        Some(error) => format!("{:.1} cm", error * 100.0),
+                        None => format!("{:.3}\u{b0}", camera.rms_degrees()),
+                    },
                 );
 
+                // What that angle is worth depends entirely on this, which is
+                // why the two are next to each other.
+                ui.label(RichText::new(format!("{:.1} m", camera.range)).weak());
+
                 ui.label(format!("{:.0}%", camera.coverage * 100.0));
+
+                ui.colored_label(
+                    if camera.feet >= 0.5 {
+                        Color32::from_rgb(120, 200, 120)
+                    } else {
+                        Color32::from_rgb(230, 180, 90)
+                    },
+                    format!("{:.0}%", camera.feet * 100.0),
+                );
 
                 // Near zero means the walk was almost flat, and the answer
                 // rests on nothing however small the residual looks.
@@ -592,6 +672,44 @@ fn summary(
     });
 }
 
+/// Whether SteamVR's idea of the floor is plausible.
+///
+/// Everything Optra computes is expressed against the standing universe's
+/// floor, so if that floor is wrong then every camera, every joint and every
+/// tracker is wrong by the same amount — and *nothing else in the application
+/// can tell*. The solve stays perfectly self-consistent, the reprojection error
+/// stays low, the room looks right, and the feet come out half a metre
+/// underground.
+///
+/// The check costs one number. A worn headset sits somewhere between a
+/// crouching child and a tall adult reaching up; well below that range, either
+/// the user is lying on the floor or the room setup was run with the headset on
+/// a desk, which is the easy mistake to make and gives exactly this symptom.
+fn floor_check(ui: &mut egui::Ui, snapshot: &crate::vr::Snapshot) {
+    /// Below this, a worn headset is not a standing person, in metres.
+    const IMPLAUSIBLE: f64 = 1.1;
+
+    let Some(head) = snapshot.device(Role::Head).filter(|device| device.tracking) else {
+        return;
+    };
+
+    let height = head.pose.translation.y;
+    if height >= IMPLAUSIBLE {
+        return;
+    }
+
+    ui.add_space(4.0);
+    ui.colored_label(
+        Color32::from_rgb(230, 180, 90),
+        format!(
+            "SteamVR puts your headset {:.0} cm above the floor. If you are standing, its \
+             floor is wrong — re-run room setup before calibrating, or every camera here \
+             will be off by the same amount.",
+            height * 100.0
+        ),
+    );
+}
+
 /// Everything standing between the user and a recording.
 ///
 /// Listed rather than reduced to a disabled button with no explanation: each of
@@ -625,6 +743,11 @@ fn blockers(ctx: &PanelContext<'_>) -> Vec<String> {
     }
 
     out
+}
+
+/// How often this camera had a foot in shot, once it had seen anybody at all.
+fn feet_fraction(trail: &crate::calib::recorder::CameraTrail) -> Option<f32> {
+    (trail.frames > 0).then(|| trail.feet_seen as f32 / trail.frames as f32)
 }
 
 /// Draws a coverage grid: one cell per region of the frame, brighter where the
