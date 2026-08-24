@@ -89,6 +89,11 @@ fn reads_poses_from_a_running_runtime() {
 #[ignore = "requires SteamVR to be running"]
 fn the_link_thread_records_a_usable_history() {
     let _guard = exclusive();
+
+    // The application raises this at startup. Without it every fixed-rate loop
+    // runs at the 64 Hz the Windows scheduler wakes threads at, and the test
+    // would be measuring the scheduler rather than the link.
+    let _timer = optra::worker::timing::TimerResolution::request();
     let mut supervisor = Supervisor::new();
     let mut link = VrLink::default();
 

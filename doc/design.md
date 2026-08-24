@@ -105,6 +105,35 @@ flowchart LR
 Threads communicate over bounded `crossbeam` channels. Every stage drops stale
 data rather than queueing it: for a real-time tracker, a late frame is worthless.
 
+### 5.0 Timing
+
+Three loops here run at a fixed rate: pose sampling, the fusion clock and the
+output thread. Two things stop them holding it, and both were measured rather
+than assumed.
+
+Windows wakes sleeping threads on a roughly 15.6 ms tick unless a process asks
+for better, so a loop sleeping 8 ms gets 15.6 ms and runs at 64 Hz whatever it
+was configured for. Nothing reports this; the loop simply runs at half speed.
+Optra raises the timer resolution for the life of the process, which is the
+documented approach for an application of this kind and, on Windows 11, applies
+to the process rather than the machine.
+
+That alone is not enough. A loop that sleeps for the period at the end of each
+pass drifts, because the sleep overshoots a little and the work takes a little
+and both accumulate. `worker::timing::Ticker` keeps the *schedule* instead of
+the interval: each tick has a deadline, and an overshoot on one is absorbed by a
+shorter sleep on the next. A loop that stalls skips the ticks it missed rather
+than running them back to back, since catching up on stale work is not what any
+of these loops want.
+
+Measured on the development machine, asking for 125 Hz:
+
+| | Achieved |
+|---|---|
+| Plain sleep, default timer resolution | 64 Hz |
+| Plain sleep, raised timer resolution | 120 Hz |
+| Ticker, raised timer resolution | 125 Hz |
+
 ### 5.1 Module layout
 
 ```

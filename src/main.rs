@@ -8,6 +8,11 @@ use optra::{app, config, logging, paths};
 fn main() -> Result<()> {
     let log = logging::init();
 
+    // Held for the life of the process. Without it every fixed-rate loop in
+    // the application runs at the 64 Hz the Windows scheduler wakes threads
+    // at, whatever it was configured for.
+    let _timer = optra::worker::timing::TimerResolution::request();
+
     paths::ensure_dirs().context("failed to create the Optra data directories")?;
     tracing::info!("data directory: {}", paths::root_dir()?.display());
 

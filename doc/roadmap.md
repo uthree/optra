@@ -121,8 +121,15 @@ keypoint in twelve thrown somewhere else.
 
 The SteamVR link is written and verified against a Quest 3: the headset and
 both controllers are read with correct classes, roles and poses. Testing it
-found that an OpenVR connection is a process singleton rather than a handle,
-which is now refused rather than crashed on; see [design.md](design.md).
+turned up two things, both recorded in [design.md](design.md):
+
+- An OpenVR connection is a process singleton rather than a handle. A second
+  one is now refused instead of crashing the first.
+- A loop asking to sleep 8 ms was running at 64 Hz, because that is the rate
+  Windows wakes sleeping threads at by default. This affects the fusion clock
+  and the output thread as much as pose sampling, so the fix lives in
+  `worker::timing`: a raised timer resolution for the process, and a ticker
+  that keeps a schedule rather than an interval.
 
 The remaining pieces are the correspondence recorder, latency estimation, and
 the wizard UI around them.

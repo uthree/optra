@@ -4,6 +4,8 @@
 //! user needs to know which one and why, rather than watching tracking silently
 //! stop, so every worker is spawned through the supervisor.
 
+pub mod timing;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;

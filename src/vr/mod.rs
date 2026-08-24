@@ -18,6 +18,7 @@ use nalgebra::{Isometry3, Matrix3, Rotation3, Translation3, UnitQuaternion, Vect
 use parking_lot::Mutex;
 
 use crate::config::VrConfig;
+use crate::worker::timing::Ticker;
 use crate::worker::{Shutdown, Supervisor};
 
 /// What a tracked device is for.
@@ -315,7 +316,7 @@ fn run(channel: Arc<VrChannel>, config: VrConfig, global: Shutdown) {
 
 /// Samples poses until the headset goes away or the thread is stopped.
 fn sample(channel: &Arc<VrChannel>, runtime: &api::Runtime, config: &VrConfig, global: &Shutdown) {
-    let period = Duration::from_secs_f32(1.0 / config.poll_hz.max(1) as f32);
+    let mut ticker = Ticker::at_hz(config.poll_hz.max(1) as f32);
     let patience = Duration::from_secs_f32(config.patience_seconds.max(1.0));
 
     // Identity is asked of the runtime once per device rather than every tick:
@@ -389,10 +390,10 @@ fn sample(channel: &Arc<VrChannel>, runtime: &api::Runtime, config: &VrConfig, g
             devices,
         });
 
-        // Sleep the remainder of the period rather than a fixed amount, so the
-        // sampling rate is the one that was asked for.
-        let spent = now.elapsed();
-        if spent < period && !wait(channel, global, period - spent) {
+        // The ticker keeps the schedule rather than the interval, so the time
+        // this pass spent talking to the runtime comes out of the next sleep
+        // instead of being added to it.
+        if !ticker.wait(&channel.stop) || global.is_cancelled() {
             return;
         }
     }
