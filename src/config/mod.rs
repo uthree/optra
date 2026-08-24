@@ -25,6 +25,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub capture: CaptureConfig,
     pub inference: InferenceConfig,
+    pub vr: VrConfig,
     pub cameras: Vec<CameraConfig>,
 }
 
@@ -205,6 +206,39 @@ impl Default for InferenceConfig {
             detector_model: "yolox-tiny-humanart-416".to_owned(),
             pose_model: "rtmpose-m-halpe26-256x192".to_owned(),
             detect_every: 5,
+        }
+    }
+}
+
+/// How Optra talks to SteamVR.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VrConfig {
+    /// Look for SteamVR at all. Turning it off is for a machine being used
+    /// only to set cameras up.
+    pub enabled: bool,
+    /// Pose sampling rate. Higher than any camera runs at, because the poses
+    /// are interpolated to the instant each frame was taken and interpolation
+    /// over a shorter gap is a better guess.
+    pub poll_hz: u32,
+    /// How much pose history to keep. Long enough that a frame still waiting
+    /// on inference can find the poses it needs.
+    pub history_seconds: f32,
+    /// Wait between attempts to reach SteamVR.
+    pub retry_seconds: f32,
+    /// How long the headset may stop reporting before the connection is
+    /// dropped and reopened.
+    pub patience_seconds: f32,
+}
+
+impl Default for VrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_hz: 120,
+            history_seconds: 4.0,
+            retry_seconds: 5.0,
+            patience_seconds: 5.0,
         }
     }
 }

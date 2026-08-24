@@ -96,7 +96,9 @@ that one is a hand-edited entry in the user manifest for now.
 
 ## M3 - VR link and calibration
 
-- OpenVR background client reading HMD and controller poses.
+- OpenVR background client reading HMD and controller poses. Done: the runtime
+  is loaded at run time, poses are sampled into a short history, and the
+  calibration panel shows the live device list.
 - Correspondence recorder for the calibration walk.
 - Lens models: radial-tangential and equidistant fisheye, selected per camera.
 - DLT resection with RANSAC, RQ decomposition into `K`, `R`, `t`.
@@ -117,8 +119,9 @@ unlike cameras and recovers their positions to within 3 mm and the head offset
 to within 3 mm, including a run with a camera blocked for half the walk and one
 keypoint in twelve thrown somewhere else.
 
-The remaining pieces all need hardware in the loop: the OpenVR client, the
-correspondence recorder, latency estimation, and the wizard UI around them.
+The SteamVR link is written and connects; what it does once connected still
+needs a headset to check. The remaining pieces are the correspondence recorder,
+latency estimation, and the wizard UI around them.
 
 ## M4 - Fusion
 

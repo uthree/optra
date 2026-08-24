@@ -56,8 +56,8 @@ These are the decisions that shape everything below.
 | Camera capture | `nokhwa` 0.10 (`input-msmf`) | Media Foundation on Windows, MJPEG and raw formats, per-device format/FPS negotiation. |
 | Inference | `ort` 2.0.0-rc.13 (ONNX Runtime 1.28), `directml` feature | Session per model, batched across cameras. |
 | Linear algebra | `nalgebra` | Poses, projections, SVD for DLT. |
-| Optimization | `levenberg-marquardt` (nalgebra-based) | Bundle adjustment for calibration refinement. |
-| OpenVR | `openvr` 0.9 / `openvr_sys` 2.1 | Background app; reads HMD and controller poses. |
+| Optimization | hand-written Levenberg-Marquardt over `nalgebra` | The parameter set mixes per-camera blocks with a shared rig offset, and expressing that through a solver crate cost more than the sixty lines the solve itself takes. |
+| OpenVR | `openvr_api.dll` loaded at run time through `libloading` | See below. |
 | OSC | `rosc` | Both output backends speak OSC over UDP. |
 | Config | `serde` + `toml` | Room profiles, model manifest, UI settings. |
 | Misc | `crossbeam-channel`, `anyhow`, `thiserror`, `tracing`, `ureq`, `sha2`, `rfd` | |
@@ -127,19 +127,23 @@ src/
       yolox.rs, rtdetr.rs, simcc.rs, heatmap.rs, movenet.rs
   models/            manifest + spec parsing, download + sha256 verify,
                      license gate, keypoint layout tables
+  geometry/          the camera model and everything solved in terms of it
+    lens.rs          radial-tangential and equidistant fisheye distortion
+    camera.rs        intrinsics, projection, angular error
+    resection.rs     DLT resection with RANSAC, RQ decomposition
+    refine.rs        joint LM refinement of all cameras and rig offsets
+    triangulate.rs   angular-weighted DLT with outlier rejection
+  vr/                the SteamVR link
+    api.rs           openvr_api.dll, loaded at run time
   calib/
-    intrinsics.rs    lens models, focal/distortion estimation and refinement
-    extrinsics.rs    DLT resection from HMD correspondences
-    bundle.rs        joint LM refinement of all cameras
+    recorder.rs      correspondence capture during the walk
     latency.rs       per-camera latency estimation
   fusion/
     sync.rs          temporal alignment to a common fusion clock
-    triangulate.rs   confidence-weighted DLT + RANSAC + Gauss-Newton
     skeleton.rs      bone-length constrained fit
     filter.rs        One Euro + constant-velocity Kalman prediction
   ik/                joint positions -> tracker position + orientation
   output/            TrackerSink trait, vrchat_osc.rs, vmt.rs
-  vr/                OpenVR client
 ```
 
 ## 6. Capture
@@ -426,6 +430,41 @@ candidate on one camera, keep the incumbent on the others, and read off the
 angular residuals from section 9.2.
 
 ## 8. Calibration
+
+### 8.0 The SteamVR link
+
+Every published OpenVR binding builds the SDK from source with CMake and links
+it statically. Neither half of that suits Optra. A C++ toolchain in the way of
+anyone compiling it is a cost with no return, and a statically linked runtime
+means the program refuses to start on a machine without SteamVR — while setting
+cameras up without a headset present is something people will do, and the first
+thing a new user does.
+
+`openvr_api.dll` is therefore located and loaded when it is needed, and its
+absence is a line in the UI rather than a failure to launch. The UI
+distinguishes "no runtime on this machine" from "SteamVR is not running",
+because those are different problems with different fixes. Optra registers as a
+background application, which means it never starts SteamVR on its own; when
+the server is down the runtime refuses the connection and the link keeps
+retrying.
+
+The function table is transcribed from `openvr_capi.h`, and only as far as the
+last entry Optra calls — the runtime's table continues past that and nothing
+reads it. Entries before that point which are never called are still declared,
+as opaque pointers, because their *position* is what identifies the ones that
+are. Two unit tests guard the transcription by asserting the size of the pose
+struct and the length of the table; getting either wrong would have the runtime
+write past the end of an array.
+
+Poses are sampled on their own thread at 120 Hz into a few seconds of history,
+and consumers ask for a pose *at a time* rather than for the latest one. A
+webcam frame and a pose sample never land on the same instant, and pairing them
+as though they did is worth several centimetres during a walk. Instants outside
+the recorded window return nothing rather than an extrapolation.
+
+SteamVR does not report its own exit through this interface, so the headset
+ceasing to be connected for a few seconds is what triggers dropping the runtime
+and looking for it again.
 
 ### 8.1 What is solved
 

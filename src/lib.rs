@@ -12,4 +12,5 @@ pub mod logging;
 pub mod models;
 pub mod paths;
 pub mod pipeline;
+pub mod vr;
 pub mod worker;

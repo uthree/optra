@@ -10,6 +10,7 @@ use crate::capture::CaptureManager;
 use crate::config::Config;
 use crate::logging::LogBuffer;
 use crate::pipeline::Pipeline;
+use crate::vr::VrLink;
 use crate::worker::{Supervisor, WorkerEvent};
 use panels::{Panel, PanelContext};
 
@@ -22,6 +23,7 @@ pub struct OptraApp {
     supervisor: Supervisor,
     capture: CaptureManager,
     pipeline: Pipeline,
+    vr: VrLink,
 
     cameras: panels::cameras::CamerasPanel,
     models: panels::models::ModelsPanel,
@@ -41,6 +43,9 @@ impl OptraApp {
         let mut supervisor = Supervisor::new();
         let mut capture = CaptureManager::default();
         let mut pipeline = Pipeline::default();
+        let mut vr = VrLink::default();
+
+        vr.start(&config.vr, &mut supervisor);
 
         if config.capture.auto_start && config.cameras.iter().any(|camera| camera.enabled) {
             capture.start(&config.cameras, &mut supervisor);
@@ -60,6 +65,7 @@ impl OptraApp {
             supervisor,
             capture,
             pipeline,
+            vr,
             cameras: Default::default(),
             models: Default::default(),
             calibration: Default::default(),
@@ -219,6 +225,7 @@ impl eframe::App for OptraApp {
                 supervisor: &mut self.supervisor,
                 capture: &mut self.capture,
                 pipeline: &mut self.pipeline,
+                vr: &mut self.vr,
                 dirty: false,
             };
 
@@ -244,6 +251,7 @@ impl eframe::App for OptraApp {
         // Cameras first: their threads are the ones the supervisor waits on.
         self.pipeline.stop();
         self.capture.stop();
+        self.vr.stop();
         self.supervisor.shutdown();
         self.dirty_since.get_or_insert_with(Instant::now);
         self.save_if_due(true);

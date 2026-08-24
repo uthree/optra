@@ -63,6 +63,7 @@ pub struct PanelContext<'a> {
     pub supervisor: &'a mut crate::worker::Supervisor,
     pub capture: &'a mut crate::capture::CaptureManager,
     pub pipeline: &'a mut crate::pipeline::Pipeline,
+    pub vr: &'a mut crate::vr::VrLink,
     /// Set by a panel when it changed the config, so the shell can save it.
     pub dirty: bool,
 }
