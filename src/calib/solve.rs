@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Point2, Point3, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{CameraConfig, LensKind};
@@ -18,6 +18,7 @@ use crate::geometry::camera::{Camera, Intrinsics};
 use crate::geometry::lens::Lens;
 use crate::geometry::refine::{RefineOptions, Sighting, refine};
 use crate::geometry::resection::{Correspondence, ResectionOptions, resect};
+use crate::geometry::triangulate::{Observation, triangulate};
 use crate::paths;
 use crate::vr::Role;
 
@@ -121,6 +122,12 @@ pub struct RoomCalibration {
     pub rejected: usize,
     /// Sightings the final fit used.
     pub used: usize,
+    /// How well these camera positions can locate a joint at all, in metres.
+    ///
+    /// A property of where the cameras are rather than of how well they were
+    /// solved, and the number that answers "is this a good placement".
+    #[serde(default)]
+    pub precision: Option<f64>,
     pub solved_at: String,
 }
 
@@ -338,14 +345,25 @@ pub fn solve(
         })
         .collect();
 
+    // A rig nothing was ever seen through has an offset of exactly the value it
+    // started at, which is zero, and reporting that alongside the solved ones
+    // presents a seed as an answer.
+    let rigs = recording
+        .rigs
+        .iter()
+        .copied()
+        .zip(refined.offsets.iter().copied())
+        .enumerate()
+        .filter(|(index, _)| {
+            sightings.iter().filter(|s| s.rig == *index).count() >= MIN_RIG_SIGHTINGS
+        })
+        .map(|(_, pair)| pair)
+        .collect();
+
     Ok(RoomCalibration {
+        precision: precision(&refined.cameras, &sightings, &refined.offsets),
         cameras,
-        rigs: recording
-            .rigs
-            .iter()
-            .copied()
-            .zip(refined.offsets.iter().copied())
-            .collect(),
+        rigs,
         rms: refined.rms,
         rejected: refined.rejected,
         used: sightings.len() - refined.rejected,
@@ -382,6 +400,67 @@ fn pair(recording: &Recording, index: &HashMap<&str, usize>, lags: &[Duration]) 
     }
 
     out
+}
+
+/// Sightings a rig needs before its offset is an answer rather than the value
+/// it was seeded with.
+const MIN_RIG_SIGHTINGS: usize = 30;
+
+/// How well these cameras, in these positions, can locate a point at all.
+///
+/// This is a property of the *geometry*, and it is a different question from
+/// the reprojection error. A calibration can be flawless and still describe a
+/// set of cameras clustered in one corner, all looking the same way: they will
+/// agree with each other beautifully about a point none of them can place along
+/// their shared line of sight. The residual cannot see that, and it is the
+/// first thing a user moving cameras around needs to know.
+///
+/// Answered by asking the machinery that will actually do the work: put a
+/// keypoint of ordinary quality at each place the person stood, triangulate it
+/// through the solved cameras, and report how well it comes out.
+fn precision(cameras: &[Camera], sightings: &[Sighting], offsets: &[Vector3<f64>]) -> Option<f64> {
+    /// A keypoint neither especially good nor especially bad.
+    const NOMINAL: f64 = 0.8;
+    /// One in this many sightings is sampled. The answer varies smoothly with
+    /// position and thousands of them would say the same thing.
+    const STRIDE: usize = 37;
+
+    let mut spreads = Vec::new();
+
+    for sighting in sightings.iter().step_by(STRIDE) {
+        let Some(offset) = offsets.get(sighting.rig) else {
+            continue;
+        };
+        let world = sighting.anchor * Point3::from(*offset);
+
+        let observations: Vec<Observation> = cameras
+            .iter()
+            .enumerate()
+            .filter_map(|(index, camera)| {
+                let pixel = camera.project(world)?;
+                let inside = pixel.x >= 0.0
+                    && pixel.y >= 0.0
+                    && pixel.x < camera.intrinsics.width as f64
+                    && pixel.y < camera.intrinsics.height as f64;
+                inside.then(|| Observation::new(index, camera, pixel, NOMINAL, 1.0))
+            })
+            .collect();
+
+        if observations.len() < 2 {
+            continue;
+        }
+        // Generous, because these are synthetic sightings with no noise in
+        // them: nothing here should ever be rejected as an outlier.
+        if let Some(solved) = triangulate(cameras, &observations, 1.0) {
+            spreads.push(solved.sigma());
+        }
+    }
+
+    if spreads.is_empty() {
+        return None;
+    }
+    spreads.sort_by(f64::total_cmp);
+    Some(spreads[spreads.len() / 2])
 }
 
 /// How far this camera typically was from the person, in metres.
@@ -431,4 +510,90 @@ fn seed_fov(kind: LensKind) -> f64 {
 fn weight_of(rig: Rig, confidence: f64) -> f64 {
     let rigidity = if rig.role == Role::Head { 1.0 } else { 0.5 };
     confidence.clamp(0.0, 1.0) * rigidity
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+
+    use super::*;
+
+    fn camera_at(x: f64, y: f64, z: f64) -> Camera {
+        Camera::look_at(
+            Intrinsics::from_fov(1280, 720, 70f64.to_radians()),
+            Lens::default(),
+            Point3::new(x, y, z),
+            Point3::new(0.0, 1.0, 0.0),
+            Vector3::y(),
+        )
+    }
+
+    /// A short walk in the middle of the room, as sightings the precision
+    /// estimate can be asked about.
+    fn walk() -> Vec<Sighting> {
+        (0..200)
+            .map(|step| {
+                let t = step as f64 * 0.07;
+                Sighting {
+                    camera: 0,
+                    rig: 0,
+                    anchor: Isometry3::from_parts(
+                        Translation3::new(0.5 * t.sin(), 1.4, 0.5 * (0.7 * t).cos()),
+                        UnitQuaternion::identity(),
+                    ),
+                    pixel: Point2::new(640.0, 360.0),
+                    weight: 1.0,
+                }
+            })
+            .collect()
+    }
+
+    /// The check a user moving cameras around needs: cameras bunched into one
+    /// corner see a joint from nearly the same direction, and agree perfectly
+    /// about a point none of them can place.
+    #[test]
+    fn clustered_cameras_are_reported_as_a_poor_placement() {
+        let offsets = [Vector3::zeros()];
+        let walk = walk();
+
+        let spread = [
+            camera_at(-2.0, 2.2, -2.0),
+            camera_at(2.0, 2.2, -2.0),
+            camera_at(0.0, 2.2, 2.2),
+        ];
+        let clustered = [
+            camera_at(0.7, 0.05, -1.6),
+            camera_at(0.5, 0.05, -1.7),
+            camera_at(0.2, 0.6, -1.9),
+        ];
+
+        let good = precision(&spread, &walk, &offsets).expect("the walk is visible");
+        let bad = precision(&clustered, &walk, &offsets).expect("the walk is visible");
+
+        assert!(
+            good < 0.02,
+            "cameras around the room should be good to a centimetre or two, got {good:.3} m"
+        );
+        assert!(
+            bad > 3.0 * good,
+            "a cluster should be visibly worse: {bad:.3} m against {good:.3} m"
+        );
+    }
+
+    /// Nothing can be said about a placement no sighting is visible from.
+    #[test]
+    fn a_placement_nothing_can_see_has_no_precision() {
+        let facing_away = [
+            Camera::look_at(
+                Intrinsics::from_fov(1280, 720, 70f64.to_radians()),
+                Lens::default(),
+                Point3::new(0.0, 1.4, 0.0),
+                Point3::new(0.0, 1.4, -5.0),
+                Vector3::y(),
+            ),
+            camera_at(0.0, 1.4, 0.1),
+        ];
+
+        assert_eq!(precision(&facing_away, &walk(), &[Vector3::zeros()]), None);
+    }
 }

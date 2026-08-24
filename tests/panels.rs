@@ -163,6 +163,7 @@ fn a_solved_room_lays_out() {
         rms: 0.014,
         rejected: 37,
         used: 763,
+        precision: Some(0.031),
         solved_at: "2026-08-25T12:00:00+09:00".to_owned(),
     };
 

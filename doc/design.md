@@ -783,6 +783,16 @@ confident to smooth. The claim is checked rather than asserted — a unit test
 injects noise of the size the model assumes and confirms the spread of the
 answers matches what was predicted.
 
+**Where the cameras are is a separate question from how well they were solved,
+and it is asked separately.** A calibration can be flawless and still describe
+cameras clustered in one corner all looking the same way: they agree with each
+other beautifully about a point none of them can place along their shared line
+of sight, and the residual cannot see it. So the wizard also reports what the
+geometry alone allows -- a keypoint of ordinary quality is placed at each point
+the person stood, triangulated through the solved cameras, and the resulting
+uncertainty reported. That is the number a user moving a tripod needs, and it is
+the residual that would mislead them.
+
 Per-joint angular residuals and uncertainties are retained and surfaced in the
 UI, together with each camera's contribution weight and the cameras that were
 dropped as outliers; this is the single most useful diagnostic when tracking

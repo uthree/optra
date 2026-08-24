@@ -26,8 +26,8 @@ use super::PanelContext;
 /// of every camera.
 const OBSERVABLE: f64 = 0.15;
 
-/// Reprojection error above which a calibration should not be trusted, in
-/// *metres at the distance the person walked*.
+/// Positional error a calibration is good at, in *metres at the distance the
+/// person walked*.
 ///
 /// The solver works in angles, because that is what compares across cameras of
 /// different resolutions and fields of view. Judging in angles is a different
@@ -35,9 +35,20 @@ const OBSERVABLE: f64 = 0.15;
 /// one millimetre from a camera on a desk a metre away, and the user is asking
 /// how far out their feet will be, not how many pixels anything is.
 ///
-/// A centimetre is about where a foot stops looking placed and starts looking
-/// approximate.
-const GOOD_ERROR_METRES: f64 = 0.01;
+/// Three centimetres, not one. A foot placed to within three is not one a user
+/// will look at and think is wrong, and a bar set where webcams cannot reach it
+/// would mean the wizard complained about every calibration anyone ever ran —
+/// which is the same as saying nothing.
+const GOOD_ERROR_METRES: f64 = 0.03;
+
+/// Past this, the feet will be visibly in the wrong place.
+const POOR_ERROR_METRES: f64 = 0.08;
+
+/// Positional uncertainty the camera *placement* is good for, in metres.
+///
+/// Not the same question as the error above, and worth keeping separate: this
+/// one is about where the cameras are, not how well they were solved.
+const GOOD_PRECISION_METRES: f64 = 0.02;
 
 #[derive(Default)]
 pub struct CalibrationPanel {
@@ -549,9 +560,44 @@ fn summary(
     if !good {
         ui.colored_label(
             Color32::from_rgb(230, 180, 90),
-            "That is enough to put the feet visibly wrong. Walking again, more slowly and \
-             covering more of the room, is usually the fix.",
+            if error > POOR_ERROR_METRES {
+                "That is enough to put the feet visibly wrong. Walking again, more slowly \
+                 and covering more of the room, is usually the fix."
+            } else {
+                "Usable, but the feet will look approximate. Walking again, more slowly and \
+                 covering more of the room, usually improves it."
+            },
         );
+    }
+
+    // A different question from the one above, and the one that a user moving
+    // cameras around actually needs answered: not how well these cameras were
+    // solved, but whether where they are is any good.
+    if let Some(precision) = room.precision {
+        let tight = precision <= GOOD_PRECISION_METRES;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Placement").weak());
+            ui.colored_label(
+                if tight {
+                    Color32::from_rgb(120, 200, 120)
+                } else {
+                    Color32::from_rgb(230, 180, 90)
+                },
+                format!("can locate a joint to about {:.0} cm", precision * 100.0),
+            );
+        });
+        if !tight {
+            ui.label(
+                RichText::new(
+                    "That is what these camera positions allow at best, however good the \
+                     calibration is. Cameras clustered together see a joint from nearly the \
+                     same direction and agree with each other about a point none of them can \
+                     place. Moving them further apart, and around the user rather than all \
+                     to one side, is what improves it.",
+                )
+                .weak(),
+            );
+        }
     }
 
     // A separate complaint entirely, and one no amount of walking will fix.
