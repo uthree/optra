@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, bounded};
 use egui::{Color32, RichText};
+use nalgebra::Point3;
 
+use crate::app::viewer3d::{Scene, Viewer3d};
 use crate::calib::recorder::{Coverage, RecorderConfig, RecorderStats};
 use crate::calib::{RoomCalibration, SolveOptions, solve};
 use crate::vr::{LinkState, Role};
@@ -34,6 +36,11 @@ pub struct CalibrationPanel {
     /// Name the next save will use.
     profile: String,
     message: Option<String>,
+    viewer: Viewer3d,
+    /// The path the headset took during the last walk. Kept after the solve
+    /// because it is the most direct answer to "do these cameras agree with
+    /// the room": the walk drawn through them should look like the room.
+    walk: Vec<Point3<f64>>,
 }
 
 #[derive(Default)]
@@ -79,7 +86,16 @@ impl CalibrationPanel {
         };
 
         match results.try_recv() {
-            Ok(Ok(room)) => self.stage = Stage::Reviewing(room),
+            Ok(Ok(room)) => {
+                // Framed once, when the answer arrives. Doing it every frame
+                // would fight the user as soon as they turned the view.
+                let mut points: Vec<Point3<f64>> =
+                    room.cameras.iter().map(|c| c.camera.position()).collect();
+                points.extend(self.walk.iter().copied());
+                self.viewer.frame(&points);
+
+                self.stage = Stage::Reviewing(room);
+            }
             Ok(Err(error)) => {
                 self.message = Some(error);
                 self.stage = Stage::Idle;
@@ -258,6 +274,16 @@ impl CalibrationPanel {
             return;
         };
 
+        // Kept before the recording is handed to the solver: the walk is what
+        // the 3D view draws to show whether the cameras agree with the room.
+        self.walk = recording
+            .rigs
+            .iter()
+            .position(|rig| rig.role == Role::Head)
+            .and_then(|rig| recording.tracks.get(rig))
+            .map(|track| track.positions())
+            .unwrap_or_default();
+
         // The solve takes seconds, and a frozen window during it looks like a
         // crash. It runs on a worker like everything else.
         let (sender, receiver) = bounded(1);
@@ -280,24 +306,25 @@ impl CalibrationPanel {
         }
 
         let mut rigs = stats.rigs.clone();
-        rigs.sort_by_key(|(rig, _)| (rig.role.order(), rig.joint));
+        rigs.sort_by_key(|progress| (progress.rig.role.order(), progress.rig.joint));
 
         egui::Grid::new("calib-rigs")
-            .num_columns(3)
+            .num_columns(4)
             .striped(true)
             .show(ui, |ui| {
-                ui.strong("Device");
-                ui.strong("Rotation variety");
-                ui.strong("");
+                for heading in ["Device", "Samples", "Rotation variety", ""] {
+                    ui.strong(heading);
+                }
                 ui.end_row();
 
-                for (rig, spread) in &rigs {
-                    ui.label(rig.label());
+                for progress in &rigs {
+                    ui.label(progress.rig.label());
+                    ui.label(RichText::new(progress.samples.to_string()).weak());
                     ui.add(
-                        egui::ProgressBar::new((*spread / 0.4).clamp(0.0, 1.0) as f32)
+                        egui::ProgressBar::new((progress.spread / 0.4).clamp(0.0, 1.0) as f32)
                             .desired_width(160.0),
                     );
-                    if *spread < OBSERVABLE {
+                    if progress.spread < OBSERVABLE {
                         ui.colored_label(Color32::from_rgb(230, 180, 90), "turn it more");
                     } else {
                         ui.colored_label(Color32::from_rgb(120, 200, 120), "enough");
@@ -349,10 +376,16 @@ impl CalibrationPanel {
     // ---- reviewing --------------------------------------------------------
 
     fn reviewing(&mut self, ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
-        let Stage::Reviewing(room) = &self.stage else {
+        let Self {
+            stage,
+            viewer,
+            walk,
+            ..
+        } = self;
+        let Stage::Reviewing(room) = stage else {
             return;
         };
-        summary(ui, room, "calib-result");
+        summary(ui, room, "calib-result", viewer, walk);
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -435,13 +468,19 @@ impl CalibrationPanel {
         // needs to be able to look this up.
         if let Some(room) = ctx.room.as_ref() {
             ui.add_space(8.0);
-            summary(ui, room, "calib-loaded");
+            summary(ui, room, "calib-loaded", &mut self.viewer, &self.walk);
         }
     }
 }
 
 /// The result table, shared by a fresh solve and a profile already in force.
-fn summary(ui: &mut egui::Ui, room: &RoomCalibration, id: &str) {
+fn summary(
+    ui: &mut egui::Ui,
+    room: &RoomCalibration,
+    id: &str,
+    viewer: &mut Viewer3d,
+    walk: &[Point3<f64>],
+) {
     let good = room.rms_degrees() <= GOOD_RMS_DEGREES;
 
     ui.horizontal(|ui| {
@@ -526,6 +565,9 @@ fn summary(ui: &mut egui::Ui, room: &RoomCalibration, id: &str) {
                 ui.end_row();
             }
         });
+
+    ui.add_space(8.0);
+    room_view(ui, room, viewer, walk);
 
     ui.add_space(6.0);
     ui.collapsing("Device offsets", |ui| {
@@ -632,4 +674,58 @@ fn coverage_map(ui: &mut egui::Ui, coverage: &Coverage) {
 fn duration(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// The solved room, drawn.
+///
+/// The residual says whether the cameras agree with each other. This says
+/// whether they agree with the room, which is a different question and the one
+/// a user can actually answer by looking: the walk should trace the floor they
+/// walked on, and the cameras should be where they put them.
+fn room_view(
+    ui: &mut egui::Ui,
+    room: &RoomCalibration,
+    viewer: &mut Viewer3d,
+    walk: &[Point3<f64>],
+) {
+    const PALETTE: [Color32; 4] = [
+        Color32::from_rgb(120, 200, 250),
+        Color32::from_rgb(250, 190, 90),
+        Color32::from_rgb(150, 220, 150),
+        Color32::from_rgb(230, 150, 220),
+    ];
+
+    let mut scene = Scene::default();
+    scene.floor(3.0, 0.5);
+
+    if walk.len() > 1 {
+        // Thinned: a walk holds tens of thousands of samples and a line
+        // between every pair of them is a solid smear rather than a path.
+        let stride = (walk.len() / 600).max(1);
+        let thinned: Vec<Point3<f64>> = walk.iter().step_by(stride).copied().collect();
+        scene.path(&thinned, Color32::from_rgb(96, 104, 120));
+    }
+
+    for (index, camera) in room.cameras.iter().enumerate() {
+        scene.camera(
+            &camera.camera,
+            &camera.id,
+            PALETTE[index % PALETTE.len()],
+            0.8,
+        );
+    }
+
+    if ui.button("Frame the room").clicked() {
+        let mut points: Vec<Point3<f64>> =
+            room.cameras.iter().map(|c| c.camera.position()).collect();
+        points.extend(walk.iter().copied());
+        viewer.frame(&points);
+    }
+
+    viewer.show(ui, &scene, 320.0);
+    ui.label(
+        RichText::new("Drag to turn, scroll to zoom.")
+            .weak()
+            .small(),
+    );
 }

@@ -9,7 +9,7 @@ these steps build toward.
 | M0 - Project skeleton | done |
 | M1 - Camera capture | done |
 | M2 - Inference | done |
-| M3 - VR link and calibration | in progress |
+| M3 - VR link and calibration | done, pending a room |
 | M4 - Fusion | |
 | M5 - Tracker output | |
 | M6 - Tuning and release | |
@@ -109,7 +109,9 @@ that one is a hand-edited entry in the user manifest for now.
   rather than a correlation; see [design.md](design.md).
 - Calibration wizard UI: guidance, live coverage map, residual reporting,
   degenerate-configuration detection, profile save/load. Done.
-- 3D viewport showing camera frusta, play-space bounds and the floor grid.
+- 3D viewport showing camera frusta and the floor grid. Done. Play-space
+  bounds need the chaperone interface, which is a separate function table and
+  is left until something else needs it.
 
 **Done when:** a calibration run converges to a low RMS reprojection error and
 the reconstructed camera positions match the physical room layout.
@@ -145,7 +147,9 @@ profile. `tests/panels.rs` lays every panel out headlessly, which is how an
 immediate-mode UI gets tested at all — a panel nobody is looking at is never
 drawn, and a layout bug in it waits until someone is mid-walk.
 
-What is left: the 3D viewport, and a walk through a real room.
+What is left is a walk through a real room with the cameras where they will
+live. Everything the milestone calls for is written and green against synthetic
+rooms and against a Quest 3.
 
 ## M4 - Fusion
 

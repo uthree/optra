@@ -322,6 +322,14 @@ impl Track {
         self.samples.last().map(|(at, _)| *at)
     }
 
+    /// The positions the device passed through, for drawing the walk.
+    pub fn positions(&self) -> Vec<nalgebra::Point3<f64>> {
+        self.samples
+            .iter()
+            .map(|(_, pose)| nalgebra::Point3::from(pose.translation.vector))
+            .collect()
+    }
+
     pub fn span(&self) -> Duration {
         match (self.first_at(), self.last_at()) {
             (Some(first), Some(last)) => last.duration_since(first),

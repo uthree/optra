@@ -428,11 +428,17 @@ fn a_recording_solves_into_a_room() {
         "the synthetic walk should be well seen, got {}",
         recording.samples()
     );
-    for (rig, spread) in recording.observability() {
+    for progress in recording.observability() {
         assert!(
-            spread > 0.2,
-            "{} barely turned during the walk: {spread:.3}",
-            rig.label()
+            progress.spread > 0.2,
+            "{} barely turned during the walk: {:.3}",
+            progress.rig.label(),
+            progress.spread
+        );
+        assert!(
+            progress.samples > 100,
+            "{} was barely seen",
+            progress.rig.label()
         );
     }
 

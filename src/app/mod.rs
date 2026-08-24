@@ -1,6 +1,7 @@
 //! The eframe application shell: navigation, status bar and config lifetime.
 
 pub mod panels;
+pub mod viewer3d;
 
 use std::time::{Duration, Instant};
 

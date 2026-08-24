@@ -236,18 +236,36 @@ impl Recording {
         self.cameras.iter().find(|trail| trail.camera == camera)
     }
 
-    /// How well each rig turned during the walk.
+    /// How each rig is doing.
     ///
     /// A rig that never rotated cannot have its offset separated from a shift
     /// of every camera, and the walk needs doing again rather than the solve
     /// needing running.
-    pub fn observability(&self) -> Vec<(Rig, f64)> {
+    pub fn observability(&self) -> Vec<RigProgress> {
         self.rigs
             .iter()
+            .enumerate()
             .zip(&self.tracks)
-            .map(|(rig, track)| (*rig, track.rotation_spread()))
+            .map(|((index, rig), track)| RigProgress {
+                rig: *rig,
+                samples: self
+                    .cameras
+                    .iter()
+                    .map(|trail| trail.samples_for(index))
+                    .sum(),
+                spread: track.rotation_spread(),
+            })
             .collect()
     }
+}
+
+/// How one rig is doing.
+#[derive(Debug, Clone, Copy)]
+pub struct RigProgress {
+    pub rig: Rig,
+    pub samples: usize,
+    /// How well the device has turned, from zero to one.
+    pub spread: f64,
 }
 
 /// Live progress, for the wizard to show while the user is still walking.
@@ -258,8 +276,9 @@ pub struct RecorderStats {
     pub samples: usize,
     /// Per camera: id, samples kept, fraction of the frame covered.
     pub cameras: Vec<(String, usize, f32)>,
-    /// Per rig: what it is, and how well it has turned so far.
-    pub rigs: Vec<(Rig, f64)>,
+    /// Per rig: what it is, how much of the walk it carries, and how well it
+    /// has turned so far.
+    pub rigs: Vec<RigProgress>,
     /// Set when the walk cannot be used, and why.
     pub warning: Option<String>,
 }

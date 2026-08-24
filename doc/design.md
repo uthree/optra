@@ -750,9 +750,18 @@ Six panels in a single window:
    prediction horizon, send rate.
 6. **Log** - `tracing` output with level filtering.
 
-The 3D viewport is drawn with `egui`'s painter using a hand-rolled projection;
-the scene is a few hundred line segments, so a full wgpu render pass would be
-overkill.
+The 3D viewport is drawn with `egui`'s painter; the scene is a few hundred line
+segments, so a full wgpu render pass would be more machinery than that is
+worth. The projection is not hand-rolled either: the viewer builds a
+`geometry::Camera` looking at the scene and reuses the same `project` the
+calibration solves against, which is code that is already tested.
+
+It exists to answer a question the residual cannot. A reprojection error in
+degrees says whether the cameras agree with *each other*; a picture of where
+they came out, with the recorded walk drawn through them, says whether they
+agree with the *room*. A calibration can be internally consistent and still
+have a camera on the wrong side of the floor, and that is visible in a second
+and invisible in a number.
 
 ### 12.1 What the wizard refuses
 
