@@ -130,6 +130,23 @@ impl Fusion {
         Some(self.channel.as_ref()?.stats().body)
     }
 
+    /// A stage with no thread behind it, holding one fixed frame.
+    ///
+    /// The tracking panel draws everything from a channel, so laying it out
+    /// with a body in it — the state that carries all the interesting
+    /// formatting — would otherwise need a calibrated room and three running
+    /// cameras. See §12.2 of the design document for why that layout is worth
+    /// testing at all.
+    pub fn detached(stats: FusionStats, frame: Option<FusionFrame>) -> Self {
+        Self {
+            channel: Some(Arc::new(FusionChannel {
+                stop: Shutdown::default(),
+                latest: Mutex::new(frame.map(Arc::new)),
+                stats: Mutex::new(stats),
+            })),
+        }
+    }
+
     /// Starts fusing, if the room and the cameras allow it.
     ///
     /// Returns why it could not start rather than failing silently: "tracking

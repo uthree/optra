@@ -10,7 +10,7 @@ these steps build toward.
 | M1 - Camera capture | done |
 | M2 - Inference | done |
 | M3 - VR link and calibration | done, pending a room |
-| M4 - Fusion | |
+| M4 - Fusion | done, pending a room |
 | M5 - Tracker output | |
 | M6 - Tuning and release | |
 
@@ -154,14 +154,49 @@ rooms and against a Quest 3.
 ## M4 - Fusion
 
 - Fixed-rate fusion clock with per-camera interpolation to a common timestamp.
+  Done. The clock runs behind real time by the slowest camera's measured delay
+  plus a slack, because interpolating onto an instant needs a frame after it.
 - Angular-weighted triangulation with RANSAC and non-linear refinement, with
-  per-camera contribution weights exposed to the UI.
-- Bone-length measurement step and constrained skeleton fit.
-- One Euro filtering and the constant-velocity Kalman predictor.
+  per-camera contribution weights exposed to the UI. Done.
+- Bone-length measurement step and constrained skeleton fit. Done, without the
+  T-pose step the design called for; see [design.md](design.md).
+- One Euro filtering and the constant-velocity Kalman predictor. Done, in that
+  order rather than the design's; see [design.md](design.md).
 - 3D viewport shows the live skeleton with per-joint confidence and residuals.
+  Done, with the predicted skeleton drawn behind the measured one.
 
 **Done when:** the 3D skeleton tracks the user smoothly, holds up under partial
 occlusion, and per-joint residuals stay within a few pixels.
+
+What this milestone found, all recorded in [design.md](design.md):
+
+- The linear triangulation is biased towards the nearest cameras, and inverting
+  the refinement's normal matrix gives the position covariance for free. The
+  square root of its largest eigenvalue — how far a joint could be wrong along
+  the direction the cameras constrain least — turned out to be far more useful
+  than the reprojection residual. Two cameras a hand's width apart agree
+  perfectly about a point neither can place: the residual says zero and the
+  uncertainty says a third of a metre.
+- The Kalman filter has to come before the One Euro filter, not after. Reversed,
+  the velocity is measured from the smoothed signal and every prediction comes
+  out short by exactly the amount the smoothing lagged.
+- The smoothing costs no latency, because a first-order low pass lags by exactly
+  its own time constant and that can simply be added to the prediction horizon.
+- The speed that opens the adaptive cutoff has to be low-passed, or a joint
+  standing still shows enough apparent speed to open the filter. At the one
+  hertz that filter is usually given, a swinging leg is attenuated enough that
+  every stride lags; three hertz is the trade.
+- Bone lengths belong in their own file, not the room profile. A body belongs to
+  a person and a room profile to a set of cameras.
+
+`tests/fusion.rs` runs a simulated walk past three unlike cameras — 30/60/25 fps,
+three resolutions, three fields of view, delays of 0, 40 and 90 ms — through the
+whole chain and recovers the body to 4 mm. Treating those delays as zero gives
+6.7 cm, which is the argument for temporal alignment in one number. Hiding a
+knee from two of the three cameras leaves the fit to place it, and it does, to
+4 cm.
+
+What is left is the same thing M3 is waiting on: a real room.
 
 ## M5 - Tracker output
 

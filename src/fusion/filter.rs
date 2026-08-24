@@ -151,6 +151,10 @@ impl Filtered {
         self.get(joint).map(|filtered| filtered.predicted)
     }
 
+    pub fn set(&mut self, joint: Joint, filtered: FilteredJoint) {
+        self.joints[joint.index()] = Some(filtered);
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (Joint, FilteredJoint)> + '_ {
         Joint::ALL
             .iter()

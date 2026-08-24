@@ -168,9 +168,12 @@ src/
     recorder.rs      correspondence capture during the walk
     latency.rs       per-camera latency estimation
   fusion/
-    sync.rs          temporal alignment to a common fusion clock
-    skeleton.rs      bone-length constrained fit
-    filter.rs        One Euro + constant-velocity Kalman prediction
+    align.rs         temporal alignment to a common fusion clock
+    fuse.rs          per-joint triangulation with positional uncertainty
+    bones.rs         measuring the body the cameras are watching
+    fit.rs           bone-length and anatomy constrained fit
+    filter.rs        constant-velocity Kalman + One Euro, and prediction
+    stage.rs         the fusion thread that runs all of the above
   ik/                joint positions -> tracker position + orientation
   output/            TrackerSink trait, vrchat_osc.rs, vmt.rs
 ```
@@ -979,6 +982,14 @@ nobody is looking at is never drawn. `tests/panels.rs` runs the layout of every
 panel against a context with no window, which catches that in a test run rather
 than in front of someone in the middle of a calibration walk. It asserts
 nothing about appearance; what it asserts is that laying out does not panic.
+
+Drawing an empty panel proves very little, though, because the interesting
+formatting only appears once there is something to format. So the states that
+carry it are constructed directly and drawn: a solved room with one good camera
+and one bad one, and a tracked body with a joint the fit had to infer, a camera
+taken out of service, and a half-measured skeleton. The tracking panel reads
+everything from the fusion stage's channel, so `Fusion::detached` builds one
+with no thread behind it purely to make that reachable.
 
 ## 13. Configuration and profiles
 
