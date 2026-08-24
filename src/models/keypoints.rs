@@ -117,6 +117,39 @@ impl Joint {
         self as usize
     }
 
+    /// The joint on the other side of the body, or the joint itself for the
+    /// ones on the midline.
+    ///
+    /// People are symmetric to within a couple of percent, so a limb the
+    /// cameras rarely see can borrow the measurement of the one they do.
+    pub fn mirror(self) -> Joint {
+        match self {
+            Joint::LeftEye => Joint::RightEye,
+            Joint::RightEye => Joint::LeftEye,
+            Joint::LeftEar => Joint::RightEar,
+            Joint::RightEar => Joint::LeftEar,
+            Joint::LeftShoulder => Joint::RightShoulder,
+            Joint::RightShoulder => Joint::LeftShoulder,
+            Joint::LeftElbow => Joint::RightElbow,
+            Joint::RightElbow => Joint::LeftElbow,
+            Joint::LeftWrist => Joint::RightWrist,
+            Joint::RightWrist => Joint::LeftWrist,
+            Joint::LeftHip => Joint::RightHip,
+            Joint::RightHip => Joint::LeftHip,
+            Joint::LeftKnee => Joint::RightKnee,
+            Joint::RightKnee => Joint::LeftKnee,
+            Joint::LeftAnkle => Joint::RightAnkle,
+            Joint::RightAnkle => Joint::LeftAnkle,
+            Joint::LeftHeel => Joint::RightHeel,
+            Joint::RightHeel => Joint::LeftHeel,
+            Joint::LeftBigToe => Joint::RightBigToe,
+            Joint::RightBigToe => Joint::LeftBigToe,
+            Joint::LeftSmallToe => Joint::RightSmallToe,
+            Joint::RightSmallToe => Joint::LeftSmallToe,
+            midline => midline,
+        }
+    }
+
     /// True for the joints the lower-body trackers are built from. These are
     /// the ones whose absence actually matters.
     pub fn is_lower_body(self) -> bool {

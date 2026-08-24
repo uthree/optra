@@ -19,6 +19,11 @@ pub fn config_file() -> Result<PathBuf> {
     Ok(root_dir()?.join("config.toml"))
 }
 
+/// The measured body, which belongs to the person rather than to the room.
+pub fn body_file() -> Result<PathBuf> {
+    Ok(root_dir()?.join("body.toml"))
+}
+
 /// Per-room calibration profiles.
 pub fn rooms_dir() -> Result<PathBuf> {
     Ok(root_dir()?.join("rooms"))

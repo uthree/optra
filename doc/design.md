@@ -742,10 +742,42 @@ rays.
 ### 9.3 Skeleton fit
 
 Raw triangulated joints jitter and violate anatomy. A constrained fit enforces
-fixed bone lengths (measured during a short T-pose step, scaled against the
-HMD's reported floor height), keeps joints above the floor plane, and limits
-knee hyperextension. Unobserved joints are filled by the constraint solver
-rather than by the last raw value.
+fixed bone lengths, keeps joints above the floor plane, and limits knee
+hyperextension. Unobserved joints are filled by the constraint solver rather
+than by the last raw value.
+
+The lengths are measured rather than assumed. A table of average proportions
+would be wrong for most people by more than the error being chased, and the
+cameras are already producing the measurement for free — a shin that reads 41 cm
+one frame and 46 cm the next is reporting keypoint noise, and the median of a
+few hundred such readings is the leg.
+
+A median, specifically, and not a mean: a pose model that occasionally puts a
+knee on the other leg produces samples wrong by tens of centimetres, and a mean
+carries every one of them. The spread is likewise a median absolute deviation,
+which is what says whether a length ever settled — a bone measured from joints
+that were themselves uncertain has a number, and holding the body to it would be
+worse than holding it to nothing.
+
+Both sides of the body pool their samples into one length. People are symmetric
+to within a couple of percent, so a leg the cameras half-see borrows the
+measurement of the leg they see well, and neither side can drift into its own
+private anatomy.
+
+Two things here differ from what this document originally specified, both
+deliberately:
+
+- **No rescaling against the headset's floor height.** The room was solved from
+  headset positions in SteamVR's own standing frame, so triangulated distances
+  are already metric; there is nothing for a scale factor to correct. If the
+  measured leg disagrees with the user's height, the calibration is wrong, and
+  rescaling would hide exactly the problem worth reporting. The comparison is
+  kept as a check.
+- **No T-pose step.** Measurement runs continuously against whatever the user
+  is doing, gated on each joint's positional uncertainty rather than on a
+  posture. A T-pose is a worse source than an ordinary minute of movement: it
+  is one configuration, held still, with the legs occluding each other from any
+  camera in front.
 
 ### 9.4 Filtering and latency compensation
 
@@ -871,8 +903,12 @@ nothing about appearance; what it asserts is that laying out does not panic.
 - `config.toml` - UI state, execution provider, output settings, per-camera model
   assignment and inference stride.
 - `rooms/<name>.toml` - camera identities (USB path and name), lens model,
-  intrinsics, extrinsics, latency offsets, bone lengths, calibration quality
-  metrics.
+  intrinsics, extrinsics, latency offsets, calibration quality metrics.
+- `body.toml` - measured bone lengths. Separate from the room profile, where
+  this document first put them: a body belongs to a person and a room profile
+  belongs to a set of cameras. Keeping them together would make a user
+  re-measure themselves every time a camera was nudged, and would give two
+  people sharing a machine one set of legs.
 - `models/` - downloaded ONNX files, `manifest.toml`, `keypoints.toml`.
 
 Camera identity is keyed on the device path so that USB re-enumeration does not
