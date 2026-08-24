@@ -304,7 +304,7 @@ pub fn solve(
                 // A walk too slow to leave a mark produces a confident-looking
                 // minimum in noise. Applying that is worse than applying
                 // nothing, so it is reported and not used.
-                Some(estimate) if estimate.is_confident() => {
+                Some(estimate) if estimate.is_confident() && estimate.is_plausible() => {
                     tracing::info!(
                         camera = %id,
                         latency_ms = estimate.millis(),
@@ -312,6 +312,11 @@ pub fn solve(
                     );
                     lags[slot] = estimate.latency;
                 }
+                Some(estimate) if !estimate.is_plausible() => tracing::warn!(
+                    camera = %id,
+                    latency_ms = estimate.millis(),
+                    "that is too long for a webcam to be behind; not applying it"
+                ),
                 Some(estimate) => tracing::warn!(
                     camera = %id,
                     latency_ms = estimate.millis(),

@@ -668,7 +668,7 @@ the corrected timestamps, which is what turns the measurement into accuracy
 rather than a number on a screen.
 
 A delay is invisible against a stationary head, so each estimate carries how
-much worse the fit gets thirty milliseconds either side of the answer,
+much worse the fit gets a probe distance either side of the answer,
 **measured in pixels** rather than as a fraction of the best fit. The relative
 form is unusable: a nearly exact fit makes any ratio enormous, so a user who
 stood still would be reported as the most confident result of all. Below about

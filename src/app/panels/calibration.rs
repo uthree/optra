@@ -570,6 +570,27 @@ fn summary(
         );
     }
 
+    // A delay this long is not a webcam. It is worth naming rather than
+    // quietly discarding, because the cause is in the capture stage and the
+    // user is the only one who can go and look.
+    let slow: Vec<&str> = room
+        .cameras
+        .iter()
+        .filter(|camera| camera.latency.is_some_and(|e| !e.is_plausible()))
+        .map(|camera| camera.id.as_str())
+        .collect();
+    if !slow.is_empty() {
+        ui.colored_label(
+            Color32::from_rgb(230, 130, 130),
+            format!(
+                "{} appears to be delivering frames more than a tenth of a second late. That \
+                 is not normal for a webcam — check its measured frame rate and dropped-frame \
+                 count in the Cameras panel. The delay has not been applied.",
+                slow.join(", ")
+            ),
+        );
+    }
+
     // A different question from the one above, and the one that a user moving
     // cameras around actually needs answered: not how well these cameras were
     // solved, but whether where they are is any good.
@@ -680,6 +701,10 @@ fn summary(
                 // the walk simply was not brisk enough to leave a mark, and
                 // saying so is more use than showing a number nothing backs.
                 match camera.latency {
+                    Some(estimate) if !estimate.is_plausible() => ui.colored_label(
+                        Color32::from_rgb(230, 130, 130),
+                        format!("{:.0} ms?!", estimate.millis()),
+                    ),
                     Some(estimate) if estimate.is_confident() => {
                         ui.label(format!("{:.0} ms", estimate.millis()))
                     }
@@ -687,7 +712,7 @@ fn summary(
                         Color32::from_rgb(190, 190, 190),
                         format!("~{:.0} ms, unsure", estimate.millis()),
                     ),
-                    None => ui.label(RichText::new("{2014}").weak()),
+                    None => ui.label(RichText::new("\u{2014}").weak()),
                 };
                 ui.end_row();
             }

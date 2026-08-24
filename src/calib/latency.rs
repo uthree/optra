@@ -84,7 +84,23 @@ impl Estimate {
     pub fn is_confident(&self) -> bool {
         self.sharpness > 1.0
     }
+
+    /// Whether this delay is one a webcam could plausibly have.
+    ///
+    /// Tens of milliseconds is a USB camera. Approaching a fifth of a second is
+    /// a camera buffering frames, a starved capture thread, or a search that
+    /// wandered — and applying it would be worse than applying nothing, so it
+    /// is worth saying out loud rather than quietly discarding.
+    pub fn is_plausible(&self) -> bool {
+        self.latency < Duration::from_millis(120)
+    }
 }
+
+/// Shortest reach the confidence probe will use, either side of the answer.
+///
+/// Below this the scaling back to a full probe amplifies whatever noise the
+/// two samples carried more than it recovers signal.
+const MIN_REACH: Duration = Duration::from_millis(8);
 
 /// Estimates the delay of one camera against the recorded device tracks.
 pub fn estimate(
@@ -131,19 +147,44 @@ pub fn estimate(
     let rms = rms_at(camera, trail, recording, offsets, latency)?;
     let rms_uncorrected = errors[0];
 
-    // How much worse the fit gets a little either side. Both directions,
-    // because a curve that only rises one way is a search that ran into its
-    // own boundary rather than a minimum.
-    let before = latency
-        .checked_sub(options.probe)
-        .and_then(|shifted| rms_at(camera, trail, recording, offsets, shifted));
-    let after = rms_at(camera, trail, recording, offsets, latency + options.probe);
-    let sharpness = match (before, after) {
-        (Some(before), Some(after)) => {
-            (before.min(after) - rms) / camera.intrinsics.radians_per_pixel()
+    // How much worse the fit gets a little either side, which is what says
+    // whether the minimum is a minimum or a dip in noise.
+    //
+    // The probe wants room on both sides of the answer, and a camera quicker
+    // than the probe distance does not have it — a frame cannot arrive before
+    // the light landed on the sensor, so there is nothing below zero to sample.
+    // Refusing to judge in that case is what this used to do, and it meant
+    // every camera under thirty milliseconds reported as unmeasurable however
+    // sharply its delay was pinned down. Instead the reach shrinks to what
+    // fits, and the rise is scaled back up to what the full probe would have
+    // shown: near its minimum the curve is quadratic, so the rise goes as the
+    // square of the distance.
+    let reach = options.probe.min(latency);
+    let (worse, over) = if reach >= MIN_REACH {
+        let before = latency
+            .checked_sub(reach)
+            .and_then(|shifted| rms_at(camera, trail, recording, offsets, shifted));
+        let after = rms_at(camera, trail, recording, offsets, latency + reach);
+        match (before, after) {
+            (Some(before), Some(after)) => (Some(before.min(after)), reach),
+            _ => (None, reach),
         }
-        _ => 0.0,
+    } else {
+        // Pinned against zero, where the boundary is real rather than an edge
+        // the search ran into: the delay cannot be negative. The rise above it
+        // is the whole story, and it is enough of one.
+        (
+            rms_at(camera, trail, recording, offsets, latency + options.probe),
+            options.probe,
+        )
     };
+
+    let sharpness = worse
+        .map(|worse| {
+            let scale = (options.probe.as_secs_f64() / over.as_secs_f64()).powi(2);
+            (worse - rms) * scale / camera.intrinsics.radians_per_pixel()
+        })
+        .unwrap_or(0.0);
 
     Some(Estimate {
         latency,
@@ -328,6 +369,61 @@ mod tests {
             estimate.rms
         );
         assert!(estimate.is_confident());
+    }
+
+    /// A camera quicker than the probe distance has no room below its answer to
+    /// sample, and used to be reported as unmeasurable for that reason alone —
+    /// so the delays most worth trusting were the ones always thrown away.
+    #[test]
+    fn a_camera_quicker_than_the_probe_is_still_measured() {
+        for millis in [0u64, 6, 14, 25] {
+            let delay = Duration::from_millis(millis);
+            let (recording, trail) = recording(delay, 1.0);
+
+            let estimate = estimate(
+                &camera(),
+                &trail,
+                &recording,
+                &[OFFSET],
+                &LatencyOptions::default(),
+            )
+            .expect("the walk is long enough to measure");
+
+            assert!(
+                (estimate.millis() - millis as f64).abs() < 2.0,
+                "a {millis} ms delay came out as {:.1} ms",
+                estimate.millis()
+            );
+            assert!(
+                estimate.is_confident(),
+                "a {millis} ms delay on a brisk walk should be trusted, sharpness was {}",
+                estimate.sharpness
+            );
+        }
+    }
+
+    /// Tens of milliseconds is a webcam. A fifth of a second is a camera
+    /// buffering, a starved capture thread, or a search that wandered.
+    #[test]
+    fn an_absurd_delay_is_not_treated_as_plausible() {
+        let (recording, trail) = recording(Duration::from_millis(30), 1.0);
+        let estimate = estimate(
+            &camera(),
+            &trail,
+            &recording,
+            &[OFFSET],
+            &LatencyOptions::default(),
+        )
+        .unwrap();
+
+        assert!(estimate.is_plausible());
+        assert!(
+            !Estimate {
+                latency: Duration::from_millis(194),
+                ..estimate
+            }
+            .is_plausible()
+        );
     }
 
     /// A user who ambles leaves a curve so flat that its minimum is noise. The
