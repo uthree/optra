@@ -42,18 +42,25 @@ impl Observation {
     }
 }
 
-/// Localization noise implied by a keypoint confidence, in radians.
+/// Localization noise implied by a keypoint confidence, in pixels.
 ///
 /// A confident keypoint is worth about a pixel; a weak one is worth several.
-/// The exact curve matters less than the fact that it is expressed in angle, so
-/// that cameras of different resolutions and fields of view compare correctly.
-pub fn angular_sigma(camera: &Camera, confidence: f64) -> f64 {
+/// The exact curve matters less than the fact that everything else that
+/// competes with keypoint noise is expressed against this same scale.
+pub fn pixel_sigma(confidence: f64) -> f64 {
     const BEST_PIXELS: f64 = 1.0;
     const WORST_PIXELS: f64 = 8.0;
 
     let confidence = confidence.clamp(0.0, 1.0);
-    let pixels = WORST_PIXELS + (BEST_PIXELS - WORST_PIXELS) * confidence;
-    pixels * camera.intrinsics.radians_per_pixel()
+    WORST_PIXELS + (BEST_PIXELS - WORST_PIXELS) * confidence
+}
+
+/// The same noise as an angle, which is the form that compares across cameras.
+///
+/// A pixel is not the same quantity on a 480p fisheye as on a 1080p narrow
+/// lens; the angle it subtends is.
+pub fn angular_sigma(camera: &Camera, confidence: f64) -> f64 {
+    pixel_sigma(confidence) * camera.intrinsics.radians_per_pixel()
 }
 
 /// A triangulated point and how well the rays agreed about it.

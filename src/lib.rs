@@ -7,6 +7,7 @@ pub mod app;
 pub mod calib;
 pub mod capture;
 pub mod config;
+pub mod fusion;
 pub mod geometry;
 pub mod infer;
 pub mod logging;

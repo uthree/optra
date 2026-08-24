@@ -628,6 +628,20 @@ at time `t`, each camera's 2D keypoints are linearly interpolated between its
 two samples that bracket `t - latency_i`. Cameras with no bracketing samples are
 skipped for that tick rather than extrapolated.
 
+Bracketing means the tick has to sit *behind* real time, since a frame after it
+does not exist yet. The clock therefore targets an instant an alignment lag
+back, chosen to cover one frame interval of the slowest camera. That lag is not
+a loss: the prediction step in 9.4 already has to compensate for a delay several
+times larger, and it is far better to predict forward from a properly aligned
+reconstruction than to fuse rays taken at three different instants.
+
+A joint present in only one of the two bracketing frames — which happens
+whenever a limb crosses the pose model's confidence threshold — is taken from
+the frame that has it rather than dropped. Dropping it would cost a camera its
+vote on exactly the joints the other cameras are also struggling with; taking it
+is a position held rather than interpolated, and the weight below charges it for
+the difference.
+
 ### 9.2 Triangulation
 
 For each canonical joint:
@@ -648,8 +662,39 @@ sigma_i = (sigma_px(conf_i) / f_i) * interp_penalty_i
 
 where `sigma_px` is the keypoint localization noise implied by the confidence
 score, `f_i` is that camera's focal length in pixels, and `interp_penalty_i`
-grows with the temporal gap between the fusion tick and that camera's nearest
-samples multiplied by the keypoint's observed angular speed.
+charges the ray for not having been observed:
+
+```
+interp_penalty = 1 + drift_px / sigma_px(conf)
+```
+
+Expressing the drift against the keypoint noise is what makes the number mean
+something: below that noise the interpolation is not what limits the answer, and
+equal to it the ray counts for a quarter of an observed one.
+
+The drift itself depends on which case produced the sample. Straight-line
+interpolation is *exact* for a joint moving at a constant speed, so charging it
+`speed × gap` — the error of holding the previous sample — would penalise every
+camera for motion that costs nothing. What it is actually wrong by is whatever
+the joint did besides moving steadily, and two frames cannot measure that. What
+they bound is how much it could be: a foot can reverse within one frame
+interval, putting the acceleration at around a speed per bracket, which gives
+
+```
+drift_px = speed × gap × (bracket - gap) / bracket
+```
+
+This vanishes at both ends of the bracket, peaks in the middle, and grows with
+how long the camera left the clock waiting — so a 30 fps camera loses influence
+during a step and regains it between them, without being switched off. A joint
+taken from only one of the two frames is a hold rather than a blend, and pays
+the first-order `speed × reach`; lacking a second sample of its own, its speed
+comes from the joints the two frames do share.
+
+The weaker of the two ends sets an interpolated joint's confidence. A joint the
+model was sure of in one frame and unsure of in the next is not half-sure in
+between — the interpolation is only as sound as the shakier observation holding
+it up.
 
 This is the piece that makes mixed hardware behave. Confidence scores are not
 comparable across models, and a pixel is not comparable across cameras; dividing

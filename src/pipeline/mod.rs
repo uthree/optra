@@ -11,7 +11,7 @@
 
 mod models;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -56,10 +56,25 @@ pub struct PoseStats {
     pub last_error: Option<String>,
 }
 
+/// How much of each camera's output is kept for the fusion stage to look back
+/// through.
+///
+/// Long enough to cover the alignment lag plus the largest per-camera latency
+/// correction, with room for a camera that stalls briefly. Nothing ever asks
+/// for more.
+const HISTORY: Duration = Duration::from_secs(2);
+
 /// Per-camera output of the inference stage.
 #[derive(Default)]
 pub struct PoseChannel {
     slot: Mutex<Option<Arc<PoseFrame>>>,
+    /// The last [`HISTORY`] of frames, oldest first.
+    ///
+    /// The newest frame is enough to draw an overlay but not to fuse. Fusion
+    /// asks what every camera saw at one shared instant, and that instant falls
+    /// between two frames on each of them; keeping the frames is what lets the
+    /// answer be interpolated rather than guessed.
+    history: Mutex<VecDeque<Arc<PoseFrame>>>,
     stats: Mutex<PoseStats>,
     last_at: Mutex<Option<Instant>>,
 }
@@ -67,6 +82,35 @@ pub struct PoseChannel {
 impl PoseChannel {
     pub fn peek(&self) -> Option<Arc<PoseFrame>> {
         self.slot.lock().clone()
+    }
+
+    /// The two frames either side of `at`, for the fusion stage to interpolate
+    /// between.
+    ///
+    /// `None` when `at` falls outside the kept history, which is the honest
+    /// answer for a camera that has not delivered a frame since. Extrapolating
+    /// a keypoint forward invents a limb position, and one invented ray is
+    /// enough to drag a triangulated joint across the room.
+    pub fn bracket(&self, at: Instant) -> Option<(Arc<PoseFrame>, Arc<PoseFrame>)> {
+        let history = self.history.lock();
+
+        let after = history.iter().position(|frame| frame.captured_at >= at)?;
+        // A tick landing exactly on the first frame brackets it with itself,
+        // which interpolates to that frame. A tick before it does not.
+        let before = match after.checked_sub(1) {
+            Some(before) => before,
+            None if history[after].captured_at == at => after,
+            None => return None,
+        };
+
+        Some((history[before].clone(), history[after].clone()))
+    }
+
+    /// The span the kept history covers, which is what says whether a camera is
+    /// keeping up with the fusion clock.
+    pub fn span(&self) -> Option<(Instant, Instant)> {
+        let history = self.history.lock();
+        Some((history.front()?.captured_at, history.back()?.captured_at))
     }
 
     pub fn stats(&self) -> PoseStats {
@@ -78,7 +122,9 @@ impl PoseChannel {
         let latency = now.duration_since(frame.captured_at).as_secs_f32() * 1000.0;
         let empty = frame.keypoints.is_empty();
 
-        *self.slot.lock() = Some(Arc::new(frame));
+        let frame = Arc::new(frame);
+        *self.slot.lock() = Some(frame.clone());
+        self.remember(frame);
 
         let mut stats = self.stats.lock();
         if empty {
@@ -94,6 +140,32 @@ impl PoseChannel {
             if dt > 0.0 {
                 stats.fps = ema(stats.fps, 1.0 / dt, 0.1);
             }
+        }
+    }
+
+    /// Appends a frame to the history and drops what has aged out.
+    fn remember(&self, frame: Arc<PoseFrame>) {
+        let mut history = self.history.lock();
+
+        // Every lookup relies on the history being sorted by capture time. A
+        // camera that restarts can hand over a frame stamped before the last
+        // one, and starting over costs that camera a single alignment window.
+        if history
+            .back()
+            .is_some_and(|last| last.captured_at > frame.captured_at)
+        {
+            history.clear();
+        }
+
+        let cutoff = frame.captured_at.checked_sub(HISTORY);
+        history.push_back(frame);
+
+        while history
+            .front()
+            .zip(cutoff)
+            .is_some_and(|(front, cutoff)| front.captured_at < cutoff)
+        {
+            history.pop_front();
         }
     }
 
@@ -425,6 +497,83 @@ fn grow(detection: &Detection, factor: f32, width: u32, height: u32) -> Detectio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(at: Instant, seq: u64) -> PoseFrame {
+        PoseFrame {
+            seq,
+            captured_at: at,
+            width: 640,
+            height: 480,
+            detection: None,
+            keypoints: Keypoints2d::default(),
+        }
+    }
+
+    #[test]
+    fn a_tick_between_two_frames_finds_both() {
+        let channel = PoseChannel::default();
+        let start = Instant::now();
+        for step in 0..5u64 {
+            channel.publish(frame(start + Duration::from_millis(step * 20), step));
+        }
+
+        let (before, after) = channel
+            .bracket(start + Duration::from_millis(31))
+            .expect("the tick is inside the history");
+        assert_eq!((before.seq, after.seq), (1, 2));
+    }
+
+    #[test]
+    fn a_tick_landing_on_a_frame_brackets_it_with_itself() {
+        let channel = PoseChannel::default();
+        let start = Instant::now();
+        channel.publish(frame(start, 0));
+        channel.publish(frame(start + Duration::from_millis(20), 1));
+
+        let (before, after) = channel.bracket(start).expect("an exact hit is in range");
+        assert_eq!((before.seq, after.seq), (0, 0));
+    }
+
+    /// A camera that has stopped delivering must not be extrapolated forward.
+    #[test]
+    fn a_tick_outside_the_history_has_no_bracket() {
+        let channel = PoseChannel::default();
+        let start = Instant::now() + Duration::from_secs(1);
+        channel.publish(frame(start, 0));
+        channel.publish(frame(start + Duration::from_millis(20), 1));
+
+        assert!(channel.bracket(start - Duration::from_millis(1)).is_none());
+        assert!(channel.bracket(start + Duration::from_millis(21)).is_none());
+    }
+
+    #[test]
+    fn the_history_forgets_what_has_aged_out() {
+        let channel = PoseChannel::default();
+        let start = Instant::now();
+        for step in 0..40u64 {
+            channel.publish(frame(start + Duration::from_millis(step * 100), step));
+        }
+
+        let (oldest, newest) = channel.span().expect("frames were published");
+        assert!(newest.duration_since(oldest) <= HISTORY);
+        assert!(channel.bracket(start + Duration::from_millis(50)).is_none());
+    }
+
+    /// A camera that restarts can stamp a frame before the one it just sent.
+    /// The history has to stay sorted or every lookup through it is wrong.
+    #[test]
+    fn a_clock_that_jumps_backwards_restarts_the_history() {
+        let channel = PoseChannel::default();
+        let start = Instant::now() + Duration::from_secs(1);
+        for step in 0..5u64 {
+            channel.publish(frame(start + Duration::from_millis(step * 20), step));
+        }
+        channel.publish(frame(start - Duration::from_millis(500), 99));
+
+        let (oldest, newest) = channel.span().unwrap();
+        assert_eq!(oldest, newest, "only the newest frame should survive");
+        assert!(channel.bracket(start + Duration::from_millis(30)).is_none());
+    }
 
     #[test]
     fn growing_a_box_stays_inside_the_image() {
