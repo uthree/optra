@@ -86,10 +86,24 @@ every tracker is wrong by the same amount, and nothing inside Optra can tell.
 The solve stays perfectly self-consistent, the reprojection error stays low, the
 reconstructed room looks right, and the feet come out half a metre underground.
 
-The check is therefore made directly, against the one number that gives it away:
-a worn headset below about 1.1 m is either a user lying on the floor or a room
-setup run with the headset on a desk. The latter is the easy mistake, and it
-produces exactly this symptom.
+Two checks are therefore made against it. The wizard tests the one number that
+gives it away up front: a worn headset below about 1.1 m is either a user lying
+on the floor or a room setup run with the headset on a desk, and the latter is
+the easy mistake. Once tracking runs there is something better -- the cameras
+can see the feet, and a foot on the ground *is* the floor, which makes the
+reconstruction an independent measurement of the very quantity it inherits.
+
+That measurement is taken from the *raw* reconstruction, never the fitted one:
+the fit holds every joint above its own idea of the floor, so measuring its
+output would hand back that idea unchanged. It is the tenth percentile of the
+lowest foot rather than the median, because a foot the cameras only catch part
+of the time is mostly a foot in the air, and not the outright minimum, which is
+whichever frame the triangulation was most wrong on.
+
+It reports and does not correct. A floor that disagrees means the room setup is
+wrong, and quietly compensating here would leave the user with a working Optra
+and a broken SteamVR -- every other application on the machine would still put
+them underground.
 
 Optra also sends `/tracking/trackers/head/{position,rotation}` from the live HMD
 pose so VRChat can align its own space to ours instead of relying on the user to
@@ -186,6 +200,7 @@ src/
     bones.rs         measuring the body the cameras are watching
     fit.rs           bone-length and anatomy constrained fit
     filter.rs        constant-velocity Kalman + One Euro, and prediction
+    floor.rs         checking SteamVR's floor against where the feet land
     stage.rs         the fusion thread that runs all of the above
   ik/                joint positions -> tracker position + orientation
   output/            TrackerSink trait, vrchat_osc.rs, vmt.rs

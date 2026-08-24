@@ -9,5 +9,6 @@ pub mod align;
 pub mod bones;
 pub mod filter;
 pub mod fit;
+pub mod floor;
 pub mod fuse;
 pub mod stage;

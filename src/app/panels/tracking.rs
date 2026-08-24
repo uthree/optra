@@ -157,6 +157,24 @@ impl TrackingPanel {
             ui.label(RichText::new(format!("{:.0} ms behind", stats.lag_ms)).weak());
         });
 
+        // Reported next to the rate rather than buried in a section, because it
+        // invalidates everything else on the panel. The cameras watching the
+        // feet are an independent measurement of a quantity the rest of the
+        // application inherits from SteamVR and never checks.
+        if let Some(floor) = stats.floor {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Floor").weak());
+                ui.colored_label(
+                    if floor.abs() <= 0.06 {
+                        Color32::from_rgb(120, 200, 120)
+                    } else {
+                        Color32::from_rgb(240, 180, 100)
+                    },
+                    format!("{:+.0} cm against SteamVR's", floor * 100.0),
+                );
+            });
+        }
+
         if let Some(warning) = &stats.warning {
             ui.add_space(4.0);
             ui.label(RichText::new(warning).color(Color32::from_rgb(240, 180, 100)));

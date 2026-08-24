@@ -314,6 +314,7 @@ fn a_tracked_body_lays_out() {
             },
         ],
         body: measured,
+        floor: Some(-0.68),
         measuring: true,
         warning: Some("cam1 disagrees with the others on 45% of the joints it sees".to_owned()),
     };

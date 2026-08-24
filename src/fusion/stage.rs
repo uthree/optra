@@ -29,6 +29,7 @@ use super::align::align;
 use super::bones::{BoneMeter, MeasureOptions, Skeleton};
 use super::filter::{Filtered, PoseFilter};
 use super::fit::{Fitted, Fitter};
+use super::floor::FloorMeter;
 use super::fuse::{Pose3d, fuse};
 
 /// How often the bone measurement is recomputed, in ticks.
@@ -88,6 +89,9 @@ pub struct FusionStats {
     pub cameras: Vec<CameraContribution>,
     /// The body measurement as it stands.
     pub body: Skeleton,
+    /// Where the feet say the floor is, relative to where SteamVR says it is,
+    /// in metres. None until enough of the user has been seen to judge.
+    pub floor: Option<f64>,
     pub measuring: bool,
     pub warning: Option<String>,
 }
@@ -295,6 +299,7 @@ fn run(
     let measure_options = MeasureOptions::default();
 
     let mut meter = BoneMeter::new(measure_options.clone());
+    let mut floor = FloorMeter::default();
     let mut skeleton = body;
     let mut fitter = Fitter::new(config.fit_options(measure_options.clone()));
     let mut filter = PoseFilter::new(config.filter_options());
@@ -339,6 +344,11 @@ fn run(
         // Measured from the reconstruction, never from the fitted result: the
         // fit already holds the body to this measurement, so measuring its
         // output would be a loop that confirms whatever it started with.
+        // Measured whatever the body settings say, because this is not about
+        // the user's anatomy: it is about whether the frame everything else is
+        // expressed in has its floor in the right place.
+        floor.observe(&raw);
+
         if config.measure_body && !raw.is_empty() {
             meter.observe(&raw);
             since_measure += 1;
@@ -360,6 +370,7 @@ fn run(
             &filtered,
             &skeleton,
             &measure_options,
+            floor.estimate(),
             rate.tick(now),
             lag,
         );
@@ -389,6 +400,7 @@ fn publish(
     filtered: &Filtered,
     skeleton: &Skeleton,
     measure: &MeasureOptions,
+    floor: Option<f64>,
     rate: f32,
     lag: Duration,
 ) {
@@ -426,6 +438,7 @@ fn publish(
     stats.worst_correction = fitted.worst_correction();
     stats.measuring = config.measure_body;
     stats.body = skeleton.clone();
+    stats.floor = floor;
     stats.cameras = tracked
         .iter()
         .map(|camera| CameraContribution {
@@ -447,6 +460,17 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
             "{} is not being used: {}",
             camera.id,
             camera.problem.as_deref().unwrap_or_default()
+        ));
+    }
+
+    // Ahead of everything else, because it is the one problem that makes the
+    // whole output wrong while every other number looks healthy.
+    if let Some(floor) = stats.floor.filter(|floor| floor.abs() > 0.06) {
+        return Some(format!(
+            "your feet are reconstructing {:.0} cm {} the floor SteamVR reports, so its \
+             room setup is off by that much",
+            floor.abs() * 100.0,
+            if floor < 0.0 { "below" } else { "above" }
         ));
     }
 
