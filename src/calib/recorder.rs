@@ -571,10 +571,15 @@ impl State {
             return None;
         }
 
+        // Turning left and right is not enough, and is what a user does
+        // naturally: a rotation about one axis leaves that axis fixed, so
+        // moving every camera up or down stays indistinguishable from moving
+        // the head keypoint up or down. Looking up and down is the part that
+        // pins the height of the room.
         (self.recording.tracks[head].rotation_spread() < 0.15).then(|| {
-            "turn your head more while walking: the offset between the headset \
-             and the head keypoint cannot be separated from the camera \
-             positions otherwise"
+            "look up and down as well as around while you walk: turning alone \
+             leaves the height of the cameras indistinguishable from the offset \
+             between the headset and the head keypoint"
                 .to_owned()
         })
     }
@@ -956,19 +961,59 @@ mod tests {
         assert!(
             state
                 .warning()
-                .is_some_and(|w| w.contains("turn your head")),
+                .is_some_and(|w| w.contains("look up and down")),
             "a walk with a fixed head orientation should be flagged"
         );
     }
 
+    /// Turning on the spot is not enough, however much of it there is. A
+    /// rotation about one axis leaves that axis fixed, and a shift of every
+    /// camera along it is indistinguishable from a shift of the head offset —
+    /// so a user who looks left and right all walk long has told the solver
+    /// nothing about how high their cameras are.
     #[test]
-    fn a_walk_that_turns_the_head_is_not_flagged() {
+    fn a_walk_that_only_turns_left_and_right_is_flagged() {
         let mut state = state(1);
         let start = Instant::now();
 
         for step in 0..1200 {
             let at = start + Duration::from_millis(step * 10);
             state.push_pose(Role::Head, at, pose(step as f64 * 0.005));
+        }
+        state.consider(
+            0,
+            &frame(
+                1,
+                start + Duration::from_millis(100),
+                &[(Joint::Head, 640.0, 360.0, 0.9)],
+            ),
+            &RecorderConfig::default(),
+        );
+
+        assert!(
+            state
+                .warning()
+                .is_some_and(|w| w.contains("look up and down")),
+            "yaw alone leaves the vertical unobservable and must be flagged"
+        );
+    }
+
+    #[test]
+    fn a_walk_that_also_looks_up_and_down_is_not_flagged() {
+        let mut state = state(1);
+        let start = Instant::now();
+
+        for step in 0..1200 {
+            let at = start + Duration::from_millis(step * 10);
+            let t = step as f64 * 0.005;
+            state.push_pose(
+                Role::Head,
+                at,
+                Isometry3::from_parts(
+                    Translation3::new(t, 1.5, 0.0),
+                    UnitQuaternion::from_euler_angles(0.35 * (1.3 * t).sin(), t, 0.0),
+                ),
+            );
         }
         state.consider(
             0,

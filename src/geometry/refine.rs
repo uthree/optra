@@ -53,6 +53,13 @@ pub struct RefineOptions {
     pub reject: f64,
     /// Stop once an iteration improves the cost by less than this fraction.
     pub tolerance: f64,
+    /// Furthest a keypoint may sit from the device it was matched to, in
+    /// metres.
+    ///
+    /// Not a guess at the real distance -- that is what the solve is for -- but
+    /// a bound on what a body permits, so that a direction the walk left
+    /// unobservable cannot slide the whole room away.
+    pub max_offset: f64,
 }
 
 impl Default for RefineOptions {
@@ -66,6 +73,11 @@ impl Default for RefineOptions {
             huber: 0.02,
             reject: 5.0,
             tolerance: 1e-6,
+            // Generous. A head keypoint sits ten or fifteen centimetres from a
+            // headset and a wrist about the same from a controller, so this
+            // never binds on a real body — it only stops the solver walking off
+            // into an answer no body could take.
+            max_offset: 0.25,
         }
     }
 }
@@ -218,7 +230,8 @@ fn descend(
             };
             let step = cholesky.solve(&(-&jtr));
 
-            let candidate = apply(&state, &step, layout);
+            let mut candidate = apply(&state, &step, layout);
+            clamp_offsets(&mut candidate, options.max_offset);
             let candidate_residual = raw_residuals(&candidate, sightings, reference);
             let candidate_cost = weighted_cost(&candidate_residual, &scale);
 
@@ -300,18 +313,42 @@ pub fn offset_observability(sightings: &[Sighting], rig: usize) -> f64 {
         return 0.0;
     }
 
-    // Averaging rotation matrices shrinks them: identical rotations average to
-    // a rotation with unit singular values, and spread pulls the smallest one
-    // down.
-    let mean = sum / count as f64;
-    let smallest = mean
+    rotation_observability(sum / count as f64)
+}
+
+/// How well a set of rotations, given by their mean matrix, constrains a
+/// constant offset in the rotating frame.
+///
+/// Moving every camera by some `d` leaves the reprojections untouched if the
+/// rig offset can absorb it, which needs `Rᵢᵀ d` to be the same for every
+/// sample — that is, `d` has to be a common fixed axis of the rotations. So the
+/// question is not whether the device turned but whether it turned about more
+/// than one axis, and the mean rotation matrix answers it: averaging unit
+/// vectors `Rᵢᵀ d` gives back something of unit length only when they were all
+/// equal, so a **largest** singular value of one is exactly the degenerate
+/// case.
+///
+/// The largest, not the smallest. This is the correction to what this function
+/// used to do, and the difference matters more than it sounds: a user walking
+/// a room turns their head from side to side and hardly at all up and down, so
+/// the yaw axis averages away nicely and the vertical does not. The smallest
+/// singular value sees the yaw and reports an excellent walk; the largest sees
+/// that the vertical is untouched and reports the truth, which is that the
+/// whole room is free to slide up and down. The synthetic walks in the tests
+/// never caught it because the simulated user obligingly nods.
+///
+/// The value returned is the fraction of a unit shift that the offset *cannot*
+/// absorb, `sqrt(1 - σ_max²)`, which is roughly the radians of rotation the
+/// walk varied by in its worst direction.
+pub fn rotation_observability(mean: Matrix3<f64>) -> f64 {
+    let largest = mean
         .svd(false, false)
         .singular_values
         .iter()
         .copied()
-        .fold(f64::INFINITY, f64::min);
+        .fold(0.0, f64::max);
 
-    (1.0 - smallest).clamp(0.0, 1.0)
+    (1.0 - largest * largest).max(0.0).sqrt().clamp(0.0, 1.0)
 }
 
 #[derive(Debug, Clone)]
@@ -409,6 +446,28 @@ fn apply(base: &State, delta: &DVector<f64>, layout: &Layout) -> State {
     }
 
     state
+}
+
+/// Pulls any rig offset back to something a body could actually have.
+///
+/// A headset does not sit half a metre from the head it is strapped to, and a
+/// hand does not hold a controller at arm's length. When the walk leaves a
+/// direction unobservable — which is most walks, in the vertical — the solver
+/// has no reason to prefer any answer along it and will take one that is
+/// anatomically impossible, carrying every camera with it, since a shift of the
+/// offset and a shift of the whole room are the same thing to it.
+///
+/// This is a bound, not a prior: it does nothing at all while the answer is
+/// plausible, and it is the difference between a bounded error and an unbounded
+/// one when it is not. It is applied to the accepted iterate rather than inside
+/// the step, so the Jacobian is still differentiating the thing it thinks it is.
+fn clamp_offsets(state: &mut State, max_offset: f64) {
+    for offset in &mut state.offsets {
+        let reach = offset.norm();
+        if reach > max_offset {
+            *offset *= max_offset / reach;
+        }
+    }
 }
 
 /// Reprojection error of every sighting, two components each, in radians.
@@ -850,9 +909,108 @@ mod tests {
 
         assert!(offset_observability(&still, 0) < 1e-9);
         assert!(
-            offset_observability(&turning, 0) > 0.3,
+            offset_observability(&turning, 0) > 0.15,
             "a varied walk should be observable, got {}",
             offset_observability(&turning, 0)
+        );
+    }
+
+    /// The failure the synthetic walks never showed, because the simulated user
+    /// obligingly nods. A real one walks a room looking left and right and
+    /// almost never up, and that leaves the vertical completely free: rotating
+    /// about an axis tells you nothing about a shift along it.
+    #[test]
+    fn turning_on_the_spot_leaves_the_vertical_unobservable() {
+        let yaw_only: Vec<Sighting> = (0..400)
+            .map(|step| {
+                let t = step as f64 * 0.05;
+                Sighting {
+                    camera: 0,
+                    rig: 0,
+                    anchor: Isometry3::from_parts(
+                        Translation3::new(1.2 * t.sin(), 1.5, 1.0 * (0.7 * t).cos()),
+                        UnitQuaternion::from_euler_angles(0.0, 0.9 * t, 0.0),
+                    ),
+                    pixel: Point2::new(640.0, 360.0),
+                    weight: 1.0,
+                }
+            })
+            .collect();
+
+        assert!(
+            offset_observability(&yaw_only, 0) < 0.02,
+            "a walk that only turns should report as unobservable, got {}",
+            offset_observability(&yaw_only, 0)
+        );
+    }
+
+    /// With a direction the walk cannot see, nothing stops the offset and every
+    /// camera sliding along it together. The bound is what makes the error
+    /// finite.
+    #[test]
+    fn an_unobservable_direction_cannot_slide_the_room_away() {
+        let truth = room(Lens::default());
+        let offset = Vector3::new(0.02, 0.09, 0.12);
+
+        // A walk with no pitch or roll at all, so the vertical is free.
+        let anchors: Vec<Isometry3<f64>> = (0..400)
+            .map(|step| {
+                let t = step as f64 * 0.05;
+                Isometry3::from_parts(
+                    Translation3::new(1.2 * t.sin(), 1.4, 1.0 * (0.7 * t).cos()),
+                    UnitQuaternion::from_euler_angles(0.0, 0.9 * t, 0.0),
+                )
+            })
+            .collect();
+
+        let mut sightings = Vec::new();
+        for anchor in &anchors {
+            let world = anchor * Point3::from(offset);
+            for (index, camera) in truth.iter().enumerate() {
+                if let Some(pixel) = camera.project(world) {
+                    sightings.push(Sighting {
+                        camera: index,
+                        rig: 0,
+                        anchor: *anchor,
+                        pixel,
+                        weight: 1.0,
+                    });
+                }
+            }
+        }
+
+        // Start every camera half a metre below where it belongs. Without the
+        // bound the offset absorbs it and the solve is perfectly happy there.
+        let sunk: Vec<Camera> = truth
+            .iter()
+            .map(|camera| {
+                let mut moved = camera.clone();
+                moved.pose.translation.vector.y -= 0.5;
+                moved
+            })
+            .collect();
+
+        let result = refine(
+            &sunk,
+            &[Vector3::zeros()],
+            &sightings,
+            &RefineOptions::default(),
+        );
+
+        assert!(
+            result.offsets[0].norm() <= RefineOptions::default().max_offset + 1e-9,
+            "the offset reached {} m",
+            result.offsets[0].norm()
+        );
+
+        let worst = truth
+            .iter()
+            .zip(&result.cameras)
+            .map(|(a, b)| (a.position().y - b.position().y).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            worst < 0.5,
+            "the room stayed {worst:.2} m below where it belongs"
         );
     }
 }

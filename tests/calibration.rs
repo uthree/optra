@@ -63,10 +63,16 @@ fn walk() -> Vec<Isometry3<f64>> {
                     1.4 + 0.32 * (1.7 * t).sin(),
                     1.15 * (0.7 * t).cos(),
                 ),
+                // The pitch is the part that matters and the part a real user
+                // forgets. Turning left and right leaves the vertical axis
+                // fixed, and a shift of every camera along a fixed axis is
+                // indistinguishable from a shift of the head offset — so a walk
+                // with yaw alone, however much of it, cannot say how high the
+                // cameras are.
                 UnitQuaternion::from_euler_angles(
-                    0.22 * (1.3 * t).sin(),
+                    0.45 * (1.3 * t).sin(),
                     0.85 * t,
-                    0.1 * (0.6 * t).cos(),
+                    0.18 * (0.6 * t).cos(),
                 ),
             )
         })

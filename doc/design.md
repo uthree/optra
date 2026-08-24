@@ -593,6 +593,32 @@ than the HMD origin, and that difference is what the solver keys on. If the user
 walks without ever turning their head, the wizard detects the degenerate
 configuration and asks for more rotation variety.
 
+**Rotating is not enough; rotating about more than one axis is what is needed.**
+Moving every camera by some `d` leaves every reprojection untouched provided the
+offset can absorb it, which requires `Rᵢᵀ d` to be the same at every sample —
+that is, `d` has to be a common fixed axis of the rotations. A user walking a
+room looks left and right and hardly at all up and down, so the yaw axis is
+exactly such an axis, and the entire room is free to slide vertically against
+the head offset. Nothing in the residual objects.
+
+The test for it is the **largest** singular value of the mean rotation matrix,
+not the smallest. Averaging unit vectors `Rᵢᵀ d` returns something of unit length
+only when they were all equal, so `σ_max = 1` is precisely the degenerate case.
+This was originally written as `1 - σ_min`, which asks whether *some* direction
+is constrained rather than whether *every* direction is: it sees the yaw
+averaging away and reports an excellent walk. The synthetic walks never caught
+it because the simulated user obligingly nods. The value reported is
+`sqrt(1 - σ_max²)`, the fraction of a unit shift the offset cannot absorb, which
+is roughly the radians of rotation the walk varied by in its worst direction.
+
+Detection is the guidance, not the guarantee. The solver also bounds each rig
+offset to a quarter of a metre — a headset does not sit half a metre from the
+head it is strapped to, and a hand does not hold a controller at arm's length.
+It is a bound rather than a prior: it does nothing at all while the answer is
+plausible, and turns an unbounded error into a bounded one when the walk left a
+direction free. It is applied to the accepted iterate rather than inside the
+step, so the Jacobian still differentiates the function it thinks it does.
+
 ### 8.3 Latency estimation
 
 USB webcams have tens of milliseconds of unmodelled delay, and it differs per

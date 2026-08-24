@@ -375,15 +375,10 @@ impl Track {
             sum += pose.rotation.to_rotation_matrix().into_inner();
         }
 
-        let mean = sum / self.samples.len() as f64;
-        let smallest = mean
-            .svd(false, false)
-            .singular_values
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-
-        (1.0 - smallest).clamp(0.0, 1.0)
+        // Deliberately not a second copy of the formula. It is subtle enough
+        // that it was wrong here and in the solver at the same time, in the
+        // same way, for the same reason.
+        crate::geometry::refine::rotation_observability(sum / self.samples.len() as f64)
     }
 }
 

@@ -186,10 +186,11 @@ impl CalibrationPanel {
         ui.strong("Record a calibration walk");
         ui.label(
             RichText::new(
-                "Put the headset on and walk slowly around the room. Cover as much floor as you \
-                 can, crouch and stretch to vary your height, and keep turning your head — the \
-                 offset between the headset and the head keypoint is only visible because the \
-                 headset rotates.",
+                "Put the headset on and walk slowly around the room. Cover as much floor as \
+                 you can, crouch and stretch to vary your height, and keep looking around — \
+                 up and down as well as side to side. The offset between the headset and the \
+                 head keypoint is only visible because the headset rotates, and turning alone \
+                 leaves the height of every camera free to slide.",
             )
             .weak(),
         );
@@ -325,7 +326,7 @@ impl CalibrationPanel {
                             .desired_width(160.0),
                     );
                     if progress.spread < OBSERVABLE {
-                        ui.colored_label(Color32::from_rgb(230, 180, 90), "turn it more");
+                        ui.colored_label(Color32::from_rgb(230, 180, 90), "look around more");
                     } else {
                         ui.colored_label(Color32::from_rgb(120, 200, 120), "enough");
                     }
