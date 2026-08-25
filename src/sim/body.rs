@@ -236,25 +236,33 @@ impl Walk {
             posture.set(knee, knee_point);
             posture.set(ankle, ankle_point);
 
-            // The foot keeps its own plane rather than following the shin: a
-            // walking foot is level for most of its stride, and the heel and
-            // toe points are what the foot trackers are built from.
-            let ground = Point3::new(ankle_point.x, 0.0, ankle_point.z);
-            posture.set(
-                heel,
-                ground - facing * anatomy.heel_back + up * anatomy.heel_height,
-            );
+            // The foot hangs off the ankle, not off the floor.
+            //
+            // Placing the heel and the toes relative to the ground under the
+            // ankle is the obvious way to do it and it is wrong: the ankle
+            // rises and falls through a stride, so the ankle-to-heel distance
+            // would rise and fall with it, and a foot whose bones change length
+            // is not a foot. The bone meter says so — it measures that distance
+            // scattering by forty per cent and refuses to name a length, which
+            // is exactly what it should do and exactly what a foot tracker
+            // cannot be built on.
+            //
+            // The foot stays level rather than following the shin. A real one
+            // pitches through the stride, but a level foot is where it spends
+            // most of it, and the alternative is either a toe through the floor
+            // or a pitch angle with nothing to justify its shape.
+            let drop = |height: f64| ankle_point - up * (anatomy.ankle_height - height);
+            posture.set(heel, drop(anatomy.heel_height) - facing * anatomy.heel_back);
             posture.set(
                 big_toe,
-                ground + facing * anatomy.toe_forward - right * (anatomy.toe_half_width * side)
-                    + up * anatomy.toe_height,
+                drop(anatomy.toe_height) + facing * anatomy.toe_forward
+                    - right * (anatomy.toe_half_width * side),
             );
             posture.set(
                 small_toe,
-                ground
+                drop(anatomy.toe_height)
                     + facing * (anatomy.toe_forward * 0.88)
-                    + right * (anatomy.toe_half_width * side)
-                    + up * anatomy.toe_height,
+                    + right * (anatomy.toe_half_width * side),
             );
         }
 
@@ -356,10 +364,33 @@ mod tests {
             (Joint::LeftShoulder, Joint::LeftElbow, anatomy.upper_arm),
             (Joint::LeftElbow, Joint::LeftWrist, anatomy.forearm),
         ];
+        // The foot bones are not a length in the anatomy but an offset from the
+        // ankle, and they are the ones that were wrong: a foot placed relative
+        // to the floor stretches every time the ankle lifts.
+        let foot = |a: Joint, b: Joint| {
+            let posture = walked(0.0);
+            (
+                a,
+                b,
+                (posture.get(b).unwrap() - posture.get(a).unwrap()).norm(),
+            )
+        };
+        let pairs = [
+            pairs.as_slice(),
+            &[
+                foot(Joint::LeftAnkle, Joint::LeftHeel),
+                foot(Joint::LeftAnkle, Joint::LeftBigToe),
+                foot(Joint::LeftHeel, Joint::LeftBigToe),
+                foot(Joint::RightAnkle, Joint::RightHeel),
+                foot(Joint::RightAnkle, Joint::RightBigToe),
+                foot(Joint::RightHeel, Joint::RightSmallToe),
+            ],
+        ]
+        .concat();
 
         for step in 0..200 {
             let posture = walked(step as f64 * 0.05);
-            for (a, b, expected) in pairs {
+            for &(a, b, expected) in &pairs {
                 let length = (posture.get(b).unwrap() - posture.get(a).unwrap()).norm();
                 assert!(
                     (length - expected).abs() < 1e-9,
