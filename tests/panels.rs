@@ -296,6 +296,9 @@ fn tracked_fusion() -> Fusion {
         lower_body: 4,
         worst_correction: 0.031,
         disagreement: 2.4,
+        // Timid enough that the panel draws the advice under the row as well as
+        // the figure, so the layout test covers the taller of the two shapes.
+        reach: Some(0.18),
         head: Some(nalgebra::Vector3::new(0.02, -0.41, 0.05)),
         scale: Some(0.63),
         tally: optra::fusion::fuse::Tally {

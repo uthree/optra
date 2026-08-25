@@ -105,6 +105,15 @@ pub struct FusionStats {
     pub worst_correction: f64,
     /// How much the body is wobbling at each stage of the chain, in metres.
     pub shake: Shake,
+    /// The share of the lower body's measured speed the prediction acted on.
+    ///
+    /// The other half of `shake`, and the reason both are on the panel. Between
+    /// them they are the two costs of the same setting: shake is what too bold
+    /// a prediction looks like, and this is what too timid a one looks like —
+    /// a body sent to the trackers where it was rather than where it is going.
+    /// Neither can be judged from the other, and neither can be judged from
+    /// outside this room.
+    pub reach: Option<f64>,
     /// How much worse the cameras agreed than their keypoints claimed, as a
     /// multiplier already applied to every joint.s uncertainty. One is perfect.
     pub disagreement: f64,
@@ -656,6 +665,16 @@ fn publish(
     stats.head = head;
     stats.scale = scale;
     stats.shake = shake;
+    // Only while something is moving. A body at rest has no speed for the
+    // prediction to reach for, and holding the last figure is more use to
+    // somebody adjusting the setting than blanking it every time they stop to
+    // look at the panel.
+    if let Some(reach) = filtered.reach {
+        stats.reach = Some(match stats.reach {
+            Some(previous) => f64::from(ema(previous as f32, reach as f32)),
+            None => reach,
+        });
+    }
     // Smoothed here rather than in the fuse, which has no memory: it is a
     // property of the room and should not be seen to twitch.
     stats.disagreement = if stats.disagreement > 0.0 {

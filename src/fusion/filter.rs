@@ -70,7 +70,30 @@ pub struct FilterOptions {
     /// Too low and the filter refuses to believe a step; too high and it
     /// follows noise. A foot changes direction over roughly a tenth of a second
     /// at a couple of metres per second.
+    ///
+    /// It also sets the floor under how well the velocity can ever be known,
+    /// which is what [`caution`](Self::caution) is measured against: five
+    /// metres per second squared at sixty hertz leaves rather less uncertainty
+    /// than the same figure at twenty, so the two are worth reading together.
     pub agility: f64,
+    /// How much the prediction holds back on a speed it is unsure of, from one
+    /// for the full amount down to zero for none.
+    ///
+    /// The velocity estimate never reaches zero on a joint standing still — it
+    /// wanders around its own noise floor — and a prediction that acts on every
+    /// wander is how a body smoothed to a little over a hertz reached VRChat
+    /// vibrating. So the velocity is weighed against how well it is known
+    /// before it is allowed to move anything, and this is how hard.
+    ///
+    /// Where it should sit depends on the room rather than on this code. The
+    /// noise floor it is defending against comes from the cameras and the pose
+    /// model — a sharp model on a well-lit 1080p camera leaves a velocity worth
+    /// acting on where a 480p webcam leaves noise — and it is traded against
+    /// latency, since holding a speed back means arriving late with it. What
+    /// the two look like is on the Tracking panel: `shake` for the cost of too
+    /// little, and how much of the measured speed the prediction is reaching
+    /// for the cost of too much.
+    pub caution: f64,
     /// How far ahead to predict, which should be the end-to-end delay from
     /// exposure to the consumer seeing it.
     pub horizon: Duration,
@@ -106,6 +129,7 @@ impl Default for FilterOptions {
             beta: 4.0,
             derivative_cutoff: 3.0,
             agility: 5.0,
+            caution: 1.0,
             horizon: Duration::from_millis(60),
             max_prediction: 0.35,
             patience: Duration::from_millis(400),
@@ -177,6 +201,17 @@ pub struct Filtered {
     /// metres. Carried here so that a stage predicting further can apply the
     /// same bound rather than inventing its own.
     pub limit: f64,
+    /// The share of the lower body's measured speed the prediction acted on,
+    /// weighted by that speed. `None` when nothing was moving.
+    ///
+    /// This is the cost of [`FilterOptions::caution`] made visible. The filter
+    /// holds back on a velocity it cannot distinguish from standing still, and
+    /// how much that costs depends entirely on how noisy this room's cameras
+    /// and pose model are — which is not something this code can know and is
+    /// something a user watching the number can. Near one and the prediction is
+    /// paying the latency back in full; near zero and the trackers are being
+    /// sent a body that is where it was rather than where it is going.
+    pub reach: Option<f64>,
     joints: JointMap<FilteredJoint>,
 }
 
@@ -186,6 +221,7 @@ impl Filtered {
             at,
             horizon,
             limit: FilterOptions::default().max_prediction,
+            reach: None,
             joints: JointMap::default(),
         }
     }
@@ -256,6 +292,7 @@ impl PoseFilter {
 
         let mut out = Filtered::empty(fitted.at, self.options.horizon);
         out.limit = self.options.max_prediction;
+        let (mut measured_speed, mut acted_on_speed) = (0.0, 0.0);
 
         for joint in Joint::ALL {
             let slot = &mut self.tracks[joint.index()];
@@ -277,18 +314,25 @@ impl PoseFilter {
                 none => none.insert(Track::new(measured.point, fitted.at)),
             };
 
-            out.set(
-                joint,
-                track.step(
-                    measured.point,
-                    measured.sigma,
-                    fitted.at,
-                    measured.inferred,
-                    &self.options,
-                ),
+            let (filtered, reach) = track.step(
+                measured.point,
+                measured.sigma,
+                fitted.at,
+                measured.inferred,
+                &self.options,
             );
+            out.set(joint, filtered);
+
+            // Over the lower body only. It is the half the trackers are built
+            // from, and an arm the cameras are unsure about would otherwise
+            // report the feet as timid.
+            if joint.is_lower_body() {
+                measured_speed += reach.measured;
+                acted_on_speed += reach.acted_on;
+            }
         }
 
+        out.reach = (measured_speed > 1e-9).then(|| acted_on_speed / measured_speed);
         out
     }
 }
@@ -326,7 +370,7 @@ impl Track {
         at: Instant,
         inferred: bool,
         options: &FilterOptions,
-    ) -> FilteredJoint {
+    ) -> (FilteredJoint, Reach) {
         let gap = at.saturating_duration_since(self.at);
         // A joint that has been out of sight is not resumed across the gap.
         // The Kalman would divide the distance it travelled while invisible by
@@ -335,14 +379,17 @@ impl Track {
         // room for what was only an occlusion.
         if gap > options.reacquire {
             *self = Track::new(measured, at);
-            return FilteredJoint {
-                point: measured,
-                velocity: Vector3::zeros(),
-                predicted: measured,
-                lead: options.horizon.as_secs_f64(),
-                sigma,
-                inferred,
-            };
+            return (
+                FilteredJoint {
+                    point: measured,
+                    velocity: Vector3::zeros(),
+                    predicted: measured,
+                    lead: options.horizon.as_secs_f64(),
+                    sigma,
+                    inferred,
+                },
+                Reach::default(),
+            );
         }
 
         let dt = gap.as_secs_f64();
@@ -449,7 +496,8 @@ impl Track {
         let mut velocity = Vector3::zeros();
         for (axis, kalman) in self.axes.iter().enumerate() {
             let power = raw[axis] * raw[axis];
-            let credible = (1.0 - kalman.velocity_variance() / power.max(1e-12)).clamp(0.0, 1.0);
+            let noise = options.caution.clamp(0.0, 1.0) * kalman.velocity_variance();
+            let credible = (1.0 - noise / power.max(1e-12)).clamp(0.0, 1.0);
             velocity[axis] = raw[axis] * credible.sqrt();
         }
 
@@ -463,8 +511,31 @@ impl Track {
             inferred,
         };
         filtered.predicted = filtered.extrapolate(lead, options.max_prediction);
-        filtered
+        (
+            filtered,
+            Reach {
+                measured: raw.norm(),
+                acted_on: velocity.norm(),
+            },
+        )
     }
+}
+
+/// How much of the speed a joint was measured to have the prediction acted on.
+///
+/// The two numbers are kept apart rather than divided here, because they are
+/// summed over the body before the ratio means anything. A joint standing still
+/// has a measured speed of almost nothing and acts on almost none of it, which
+/// is the filter working; averaging that in as "nought per cent" alongside a
+/// swinging foot would report the body as timid whenever most of it was at rest.
+/// Weighting by the speed actually measured asks the useful question instead:
+/// of the movement there was, how much reached the trackers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Reach {
+    /// Speed the Kalman estimated, in metres per second.
+    pub measured: f64,
+    /// Speed the prediction was allowed to use, in metres per second.
+    pub acted_on: f64,
 }
 
 /// Time constant of a first-order low pass at `cutoff` hertz, in seconds.
@@ -872,6 +943,153 @@ mod tests {
         assert!(
             walking > 1.5 * still,
             "still {still:.3} against walking {walking:.3}"
+        );
+    }
+
+    /// Walks a noisy joint at a steady speed and reports what the filter did
+    /// with it: how far the prediction reached past the smoothed position, and
+    /// how much of the measured speed it acted on.
+    fn walked(caution: f64, speed: f64) -> (f64, f64) {
+        let mut filter = PoseFilter::new(FilterOptions {
+            caution,
+            ..FilterOptions::default()
+        });
+        let mut noise = Noise(0xA11E);
+        let start = Instant::now();
+
+        let (mut lead, mut reach, mut counted) = (0.0, 0.0, 0);
+
+        for step in 0..240 {
+            let t = STEP.as_secs_f64() * step as f64;
+            let jitter = Vector3::new(noise.next(), noise.next(), noise.next()) * 0.01;
+            let measured = Point3::new(speed * t, 1.0, 0.0) + jitter;
+            let out = filter.push(&pose(start + STEP * step, measured, 0.01));
+
+            // After the Kalman has settled, so this measures the filter rather
+            // than its first few frames.
+            if step > 120 {
+                let joint = out.get(Joint::LeftAnkle).unwrap();
+                lead += (joint.predicted - joint.point).norm();
+                reach += out.reach.unwrap_or(0.0);
+                counted += 1;
+            }
+        }
+
+        let counted = counted as f64;
+        (lead / counted, reach / counted)
+    }
+
+    /// The prediction caution does what the panel says it does.
+    ///
+    /// A setting a user can move has to move the thing its label names, and
+    /// this one names two: how far the prediction reaches, and how much of the
+    /// measured speed it is allowed to use. The default holds a walking joint
+    /// back to a fraction of its own speed, which is the finding that made the
+    /// setting worth exposing rather than a number chosen here.
+    #[test]
+    fn lowering_the_caution_lets_the_prediction_reach_further() {
+        // Two speeds, because how much the caution costs is not a constant. It
+        // weighs a velocity against a noise floor, so a brisk joint passes
+        // through nearly untouched and a slow one is held back hard — which is
+        // the behaviour, and also why the panel shows the figure live instead of
+        // this file claiming a number for it.
+        for speed in [1.0, 0.3] {
+            let (cautious_lead, cautious_reach) = walked(1.0, speed);
+            let (bold_lead, bold_reach) = walked(0.0, speed);
+
+            println!(
+                "at {speed:.1} m/s — caution 1.0: {:.0} mm ahead on {:.0}% of the speed; \
+                 caution 0.0: {:.0} mm ahead on {:.0}% of the speed",
+                cautious_lead * 1000.0,
+                cautious_reach * 100.0,
+                bold_lead * 1000.0,
+                bold_reach * 100.0
+            );
+
+            assert!(
+                bold_reach > 0.95,
+                "with no caution the prediction should act on the speed it measured, \
+                 and at {speed:.1} m/s it acted on {:.0}%",
+                bold_reach * 100.0
+            );
+            assert!(
+                cautious_reach < 0.9,
+                "the caution held nothing back at {speed:.1} m/s: {:.0}% of the speed \
+                 went through",
+                cautious_reach * 100.0
+            );
+            assert!(
+                bold_lead > 1.2 * cautious_lead && bold_lead - cautious_lead > 0.01,
+                "at {speed:.1} m/s the prediction reached {:.0} mm ahead cautiously and \
+                 {:.0} mm boldly, which is not a difference a user could act on",
+                cautious_lead * 1000.0,
+                bold_lead * 1000.0
+            );
+        }
+    }
+
+    /// And what that costs, which is the other half of the same setting.
+    ///
+    /// A user turning the caution down to follow their stride is buying it with
+    /// stillness, and the panel says so. This is that sentence as a number, so
+    /// that the two directions cannot drift apart.
+    #[test]
+    fn lowering_the_caution_costs_stillness() {
+        fn wobble(caution: f64) -> f64 {
+            let mut filter = PoseFilter::new(FilterOptions {
+                caution,
+                ..FilterOptions::default()
+            });
+            let mut noise = Noise(0x5EED);
+            let start = Instant::now();
+            let truth = Point3::new(0.1, 0.09, -0.2);
+
+            let (mut sum, mut counted) = (0.0, 0);
+            for step in 0..300 {
+                let jitter = Vector3::new(noise.next(), noise.next(), noise.next()) * 0.02;
+                let out = filter.push(&pose(start + STEP * step, truth + jitter, 0.02));
+                if step > 60 {
+                    let joint = out.get(Joint::LeftAnkle).unwrap();
+                    let sent = joint.extrapolate(0.08 + joint.lead, out.limit);
+                    sum += (sent - truth).norm_squared();
+                    counted += 1;
+                }
+            }
+            (sum / counted as f64).sqrt()
+        }
+
+        let cautious = wobble(1.0);
+        let bold = wobble(0.0);
+        println!(
+            "a joint that never moved was sent {:.1} mm out cautiously and {:.1} mm boldly",
+            cautious * 1000.0,
+            bold * 1000.0
+        );
+        assert!(
+            bold > 2.0 * cautious,
+            "the caution is not buying any stillness: {:.1} mm against {:.1} mm",
+            cautious * 1000.0,
+            bold * 1000.0
+        );
+    }
+
+    /// Nothing moving is not the same as a timid prediction, and the panel
+    /// would read as the second if this reported zero for the first.
+    #[test]
+    fn a_body_that_is_not_moving_reports_no_reach_rather_than_none_reached() {
+        let mut filter = PoseFilter::default();
+        let start = Instant::now();
+        let truth = Point3::new(0.0, 0.5, 0.0);
+
+        let mut last = None;
+        for step in 0..90 {
+            last = Some(filter.push(&pose(start + STEP * step, truth, 0.005)));
+        }
+
+        assert_eq!(
+            last.expect("a pose").reach,
+            None,
+            "a joint that never moved reported a share of a speed it did not have"
         );
     }
 }

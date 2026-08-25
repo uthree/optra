@@ -219,9 +219,18 @@ impl Default for InferenceConfig {
 /// Settings for the fusion stage.
 ///
 /// Only the knobs a user has reason to touch. Everything else the stage needs —
-/// outlier thresholds, constraint passes, process noise — is decided by the
-/// code that has to answer for it, and putting it here would only make it
-/// possible to break tracking from a text file.
+/// outlier thresholds, constraint passes, how many times the fit iterates — is
+/// decided by the code that has to answer for it, and putting it here would
+/// only make it possible to break tracking from a text file.
+///
+/// The two filter constants are here because the code cannot answer for them.
+/// Both sit on the same trade between following a movement and ignoring noise,
+/// and where the best point is depends on how noisy this particular room's
+/// cameras and pose model are — which is measurable in the room and not
+/// anywhere else. The accuracy harness makes the shape of the trade concrete
+/// and also shows it has no single answer: lowering the agility improves a
+/// walking body and makes a fast one worse. So the defaults are the safe end
+/// and the Tracking panel shows both costs while they are moved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FusionConfig {
@@ -266,6 +275,22 @@ pub struct FusionConfig {
     /// Cutoff of the position smoothing at rest, in hertz. Lower is stiller and
     /// slower to respond.
     pub smoothing_hz: f32,
+    /// How hard the body being tracked is expected to change speed, in metres
+    /// per second squared.
+    ///
+    /// Too low and the filter refuses to believe a stride; too high and it
+    /// follows whatever the pose model did that frame. Where it belongs depends
+    /// on the room: a sharp model on good cameras leaves a signal worth
+    /// following at settings that would only chase noise on a 480p webcam, and
+    /// somebody dancing is not somebody standing at a desk.
+    pub agility_mps2: f32,
+    /// How much the prediction holds back on a speed it is unsure of, from one
+    /// for all of it down to zero for none.
+    ///
+    /// The other half of the same trade. Raising it is stiller when the user is
+    /// still, at the cost of arriving late with a movement; lowering it follows
+    /// a stride sooner, at the cost of acting on speeds that were noise.
+    pub prediction_caution: f32,
     /// Keep refining the body measurement while tracking runs.
     pub measure_body: bool,
 }
@@ -281,6 +306,8 @@ impl Default for FusionConfig {
             max_joint_sigma: 0.10,
             prediction_ms: 20,
             smoothing_hz: 1.2,
+            agility_mps2: 5.0,
+            prediction_caution: 1.0,
             measure_body: true,
         }
     }
@@ -308,6 +335,8 @@ impl FusionConfig {
     pub fn filter_options(&self) -> crate::fusion::filter::FilterOptions {
         crate::fusion::filter::FilterOptions {
             min_cutoff: self.smoothing_hz as f64,
+            agility: self.agility_mps2 as f64,
+            caution: self.prediction_caution as f64,
             horizon: std::time::Duration::from_millis(self.prediction_ms as u64),
             ..crate::fusion::filter::FilterOptions::default()
         }

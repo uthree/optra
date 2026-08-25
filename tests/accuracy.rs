@@ -682,7 +682,7 @@ fn table(report: &Report) -> String {
 /// it. The effect is small, because a bone length is a median over thousands of
 /// samples and one pose barely moves it, but "small" is a claim and this is
 /// cheaper than defending it.
-fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
+fn walk(eyes: &mut dyn Eyes, scene: &Scene, filter_options: FilterOptions) -> Report {
     let cameras = scene.cameras(CAMERAS);
     let start = Instant::now() + Duration::from_secs(60);
     let step = Duration::from_secs_f64(1.0 / RATE);
@@ -749,7 +749,6 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
     let skeleton = meter.finish();
     score_bones(&mut report, &skeleton, scene, &measure);
 
-    let filter_options = FilterOptions::default();
     let horizon = filter_options.horizon.as_secs_f64();
     let mut fitter = Fitter::new(FitOptions::default());
     let mut filter = PoseFilter::new(filter_options);
@@ -956,7 +955,7 @@ fn a_simulated_walk_is_reconstructed_from_perfect_keypoints() {
         noise: 1.0,
         rng: Rng::new(0x0F7A_ACC0),
     };
-    let report = walk(&mut eyes, &scene);
+    let report = walk(&mut eyes, &scene, FilterOptions::default());
     eprint!("{}", table(&report));
 
     assert!(
@@ -1111,6 +1110,69 @@ fn one_camera_cannot_place_a_body_and_four_can() {
     assert!(together.count() >= Joint::ALL.len() - 2);
 }
 
+/// The two settings on the Tracking panel do what the panel says they do.
+///
+/// A number a user can move is a promise, and this is the only place that can
+/// check it: the filter's own tests can say the prediction reaches further, and
+/// only a walk with a known answer can say whether reaching further puts the
+/// body nearer to where it actually is.
+///
+/// It also stops the panel's wording drifting away from the code. The label
+/// says the caution trades arriving late against acting on noise; if a change
+/// upstream ever made that untrue, the sentence would still be sitting there
+/// telling users to turn a knob that no longer does anything.
+///
+/// What it deliberately does *not* do is assert that the bold setting is
+/// better. On this walk it is, by a factor of two; on the faster body in
+/// `tests/fusion.rs` it is worse by nearly as much. That is why the setting
+/// exists instead of a new default.
+#[test]
+fn the_filter_settings_move_what_the_panel_says_they_move() {
+    let scene = Scene::default();
+
+    let run = |options: FilterOptions| {
+        let mut eyes = Projected {
+            noise: 1.0,
+            rng: Rng::new(0x0F7A_ACC0),
+        };
+        let report = walk(&mut eyes, &scene, options);
+        let timing = report
+            .timing
+            .get("predicted")
+            .expect("the shipped stage")
+            .clone();
+        let error = report
+            .lower_body(&report.distances(&report.predicted))
+            .median();
+        (timing.lag_millis(), error)
+    };
+
+    let (cautious_lag, cautious_error) = run(FilterOptions::default());
+    let (bold_lag, bold_error) = run(FilterOptions {
+        caution: 0.0,
+        ..FilterOptions::default()
+    });
+
+    eprintln!(
+        "caution 1.0: {cautious_lag:.0} ms behind, {:.1} cm out; \
+         caution 0.0: {bold_lag:.0} ms behind, {:.1} cm out",
+        cautious_error * 100.0,
+        bold_error * 100.0
+    );
+
+    assert!(
+        bold_lag < cautious_lag,
+        "turning the caution off left the output just as late: {bold_lag:.0} ms \
+         against {cautious_lag:.0} ms"
+    );
+    assert!(
+        cautious_lag - bold_lag >= 20.0,
+        "the caution is worth {:.0} ms of latency, which is not enough to be \
+         worth a setting",
+        cautious_lag - bold_lag
+    );
+}
+
 /// The measurement this whole file exists for.
 ///
 /// Prints the table and asserts only what would be a genuine regression rather
@@ -1142,7 +1204,7 @@ fn the_pose_models_reconstruct_the_body_from_rendered_frames() {
 
     let scene = Scene::default();
     let started = Instant::now();
-    let report = walk(&mut eyes, &scene);
+    let report = walk(&mut eyes, &scene, FilterOptions::default());
 
     eprint!("{}", table(&report));
     eprintln!(

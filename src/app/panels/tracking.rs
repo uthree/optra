@@ -180,7 +180,33 @@ impl TrackingPanel {
                     RichText::new(format!("{:.0} mm", metres * 1000.0)).color(shaking(metres)),
                 );
             }
+
+            // Beside the shake because it is the same trade seen from the other
+            // side. Shake is what an over-bold prediction costs; this is what a
+            // timid one costs, and a user moving the settings below needs to
+            // watch both or they will simply trade one for the other without
+            // knowing it.
+            ui.separator();
+            ui.label(RichText::new("Prediction reaching").weak());
+            match stats.reach {
+                Some(reach) => {
+                    ui.label(RichText::new(format!("{:.0}%", reach * 100.0)).color(reaching(reach)))
+                }
+                None => ui.label(RichText::new("\u{2014}").weak()),
+            };
         });
+        if stats.reach.is_some_and(|reach| reach < REACH_TIMID) {
+            ui.label(
+                RichText::new(
+                    "The prediction is acting on a fraction of the speed the cameras \
+                     measured, so the trackers are being sent a body nearer to where it \
+                     was than to where it is going. Lowering the prediction caution or \
+                     raising the agility below will let more of it through — at the cost \
+                     of the shake figures above.",
+                )
+                .weak(),
+            );
+        }
 
         // Why the joints that are not measured are not measured. "Twenty-three
         // of twenty-six inferred" says something is badly wrong and nothing
@@ -668,6 +694,60 @@ fn settings(ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
         .changed();
     ui.label(RichText::new("Lower is stiller at rest and slower to react.").weak());
 
+    // The two below are the same trade from two directions, and there is no
+    // setting of them that is right everywhere: it depends on how noisy this
+    // room's cameras and pose model are, and on whether the person is standing
+    // at a desk or dancing. Measured on the simulated walk, lowering the
+    // agility roughly halves the error on a walking body and makes it half as
+    // good again on one whose legs move at a couple of metres per second.
+    //
+    // So they are presented together, with what to watch named in both
+    // directions, rather than as two numbers in a list.
+    ui.add_space(8.0);
+    ui.strong("Following movement");
+    ui.label(
+        RichText::new(
+            "These two decide how much of a movement reaches the trackers and how much \
+             is held back as noise. There is no setting that is right for every room: a \
+             sharp pose model on well-lit cameras leaves a signal worth following where a \
+             480p webcam leaves noise. Move them while walking about and watch the two \
+             figures at the top — Shake for going too far, Prediction reaching for not \
+             going far enough.",
+        )
+        .weak(),
+    );
+
+    ui.add_space(4.0);
+    changed |= ui
+        .add(
+            egui::Slider::new(&mut fusion.agility_mps2, 0.5..=12.0)
+                .text("Body agility (m/s\u{b2})"),
+        )
+        .changed();
+    ui.label(
+        RichText::new(
+            "How hard the body is expected to change speed between frames. Too low and \
+             the filter will not believe a stride; too high and it follows whatever the \
+             pose model did that frame.",
+        )
+        .weak(),
+    );
+
+    ui.add_space(4.0);
+    changed |= ui
+        .add(
+            egui::Slider::new(&mut fusion.prediction_caution, 0.0..=1.0).text("Prediction caution"),
+        )
+        .changed();
+    ui.label(
+        RichText::new(
+            "How much the prediction holds back on a speed it is unsure of. Higher is \
+             stiller when you stand still, at the cost of arriving late with a movement. \
+             Zero acts on the measured speed whatever the filter thinks of it.",
+        )
+        .weak(),
+    );
+
     ui.add_space(4.0);
     changed |= ui
         .add(
@@ -758,6 +838,32 @@ fn shaking(metres: f64) -> Color32 {
     if metres <= 0.003 {
         GOOD
     } else if metres <= 0.010 {
+        FAIR
+    } else {
+        BAD
+    }
+}
+
+/// Below this share of the measured speed, the prediction is said to be timid
+/// and the panel says what to do about it.
+///
+/// Half, because the prediction is what pays back the whole delay from a shutter
+/// opening to a tracker moving. Acting on less than half the speed the cameras
+/// measured leaves more than half of that delay unpaid, whatever the horizon is
+/// set to — which is the failure the accuracy harness found and which nothing in
+/// the application could previously see.
+const REACH_TIMID: f64 = 0.5;
+
+/// Colours how much of the measured speed the prediction is acting on.
+///
+/// Unlike the shake figures, more is not simply better: a hundred per cent on a
+/// noisy room means the prediction is acting on speeds that were measurement
+/// error, and the shake beside it is where that shows up. So only the timid end
+/// is coloured as a fault, and the rest is left plain.
+fn reaching(share: f64) -> Color32 {
+    if share >= REACH_TIMID {
+        GOOD
+    } else if share >= 0.25 {
         FAIR
     } else {
         BAD
