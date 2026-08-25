@@ -210,6 +210,7 @@ src/
     floor.rs         checking SteamVR's floor against where the feet land
     head.rs          checking the whole room against where the headset is
     shake.rs         how much each stage is moving that a body could not
+    settle.rs        holding a joint out until it stops changing its mind
     stage.rs         the fusion thread that runs all of the above
   output/
     pose.rs          joint positions -> tracker position + orientation
@@ -960,10 +961,12 @@ Nothing offered a keypoint; something did and none of it cleared the confidence
 gate, with the best confidence any camera managed carried alongside; only one
 ray arrived, which fixes a direction and nothing else; the geometry could not be
 solved from any subset; or it was solved and thrown away for being too
-uncertain. These are four unrelated problems with four different next moves —
-move a camera, lower the gate, add a camera that can see the joint, recalibrate
-— and the panel showed one dash for all of them. "Twenty-three of twenty-six
-joints inferred" says something is badly wrong and nothing about what.
+uncertain. These are five unrelated problems with five different next moves —
+move a camera, lower the gate, add a camera that can see the joint, recalibrate,
+move the cameras apart — and the panel showed one dash for all of them.
+"Twenty-three of twenty-six joints inferred" says something is badly wrong and
+nothing about what. A sixth entry sits beside them, for joints held back rather
+than faulty; it is described at the end of this section.
 
 Writing the test for that turned up something worth stating plainly: **two rays
 can never disagree.** Two skew lines always have a nearest point, so a badly
@@ -996,6 +999,42 @@ drag the rest of the body with it is the failure that makes multi-camera
 tracking feel worse than single-camera tracking. What holds the body together is
 the skeleton fit below, which knows about anatomy; this stage knows only about
 rays.
+
+**Every one of those tests is a threshold on a quantity that moves between
+ticks, so a joint sitting on one does not settle on an answer.** It passes,
+fails, passes, fails, at the tick rate. That would be harmless if the two
+outcomes were near each other and they are not: a joint that is reconstructed
+sits where the cameras put it, and a joint that is not is invented by the fit,
+from the skeleton, wherever the bones say it has to be. The distance between
+those two answers is the calibration error — centimetres in a good room, and
+seventeen of them in the report that prompted this. So the joint does not
+degrade when it flips. It teleports, sixty times a second, between two positions
+that are each defensible, and nothing downstream removes that: it is a square
+wave whose amplitude is a real disagreement, not noise around a true value.
+
+This is the failure of section 9.1 one level down. There it was a camera
+dropping in and out of ticks changing which cameras a joint was built from; here
+it is a joint dropping in and out of the body. The answer is the same shape:
+decide, and then hold the decision. A joint that fails goes out at once, because
+there is nothing else available — the reconstruction genuinely has no position
+for it — but coming back takes a run of consecutive ticks that all agree, six by
+default, a tenth of a second at sixty hertz. Counted in ticks rather than
+milliseconds because what it guards against is alternation from one tick to the
+next.
+
+The cost is that a joint the cameras can only solve half the time stays
+inferred, and that is the right trade. An inferred joint is smooth and
+anatomically possible and may be in the wrong place; an alternating one is in
+the wrong place half the time *and* unusable the rest. A joint starts admitted,
+so acquiring the body at startup costs nothing — the dwell exists to stop a
+joint coming *back* too eagerly, and there is nothing to come back from until
+something has gone out.
+
+Held-back joints are counted on the panel as their own reason, beside the four
+faults. They are the one entry there that is not a complaint about the room, and
+a count that stays high is worth its own diagnosis: it says the thresholds are
+being sat on, and therefore that every other figure on the panel is describing a
+body that keeps changing which joints it is made of.
 
 ### 9.3 Skeleton fit
 

@@ -73,6 +73,7 @@ use optra::fusion::bones::{BONES, Bone, BoneMeter, MeasureOptions, Skeleton};
 use optra::fusion::filter::{FilterOptions, PoseFilter};
 use optra::fusion::fit::{FitOptions, Fitter};
 use optra::fusion::fuse::{FuseOptions, Pose3d, fuse};
+use optra::fusion::settle::Settling;
 use optra::geometry::camera::Camera;
 use optra::infer::session::ProviderChoice;
 use optra::infer::traits::{Detector, ImageView, Keypoint, Keypoints2d, Pose2d};
@@ -694,6 +695,10 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene, filter_options: FilterOptions) -> Re
     };
     let mut reconstructions: Vec<(f64, Pose3d)> = Vec::with_capacity(ticks);
     let fuse_options = FuseOptions::default();
+    // Persistent across ticks, exactly as the fusion stage keeps it: a fresh
+    // one per tick would admit everything and measure a chain this run does
+    // not have.
+    let mut settling = Settling::default();
 
     for tick in 0..ticks {
         let t = tick as f64 / RATE;
@@ -728,7 +733,7 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene, filter_options: FilterOptions) -> Re
             }
         }
 
-        let reconstruction = fuse(&cameras, &views, at, &fuse_options);
+        let reconstruction = fuse(&cameras, &views, at, &fuse_options, &mut settling);
         if reconstruction.is_empty() {
             continue;
         }
@@ -1099,8 +1104,20 @@ fn one_camera_cannot_place_a_body_and_four_can() {
         })
         .collect();
 
-    let alone = fuse(&cameras, &views[..1], at, &FuseOptions::default());
-    let together = fuse(&cameras, &views, at, &FuseOptions::default());
+    let alone = fuse(
+        &cameras,
+        &views[..1],
+        at,
+        &FuseOptions::default(),
+        &mut Settling::default(),
+    );
+    let together = fuse(
+        &cameras,
+        &views,
+        at,
+        &FuseOptions::default(),
+        &mut Settling::default(),
+    );
 
     assert!(
         alone.is_empty(),

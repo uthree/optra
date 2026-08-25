@@ -22,6 +22,7 @@ use crate::geometry::triangulate::{Observation, Triangulation, closest_approach,
 use crate::models::{Joint, JointMap};
 
 use super::align::Aligned;
+use super::settle::Settling;
 
 #[derive(Debug, Clone)]
 pub struct FuseOptions {
@@ -41,6 +42,12 @@ pub struct FuseOptions {
     /// passing it downstream would only give the filter something confident to
     /// smooth.
     pub max_sigma: f64,
+    /// Consecutive solved ticks a joint owes before it is used again, having
+    /// failed one of the tests above.
+    ///
+    /// Zero turns it off. See [`crate::fusion::settle`] for why holding a joint
+    /// out is better than letting it alternate.
+    pub settle_ticks: u32,
 }
 
 impl Default for FuseOptions {
@@ -52,18 +59,27 @@ impl Default for FuseOptions {
             // leg does not pass for the right one.
             inlier_threshold: 0.01,
             max_sigma: 0.10,
+            // A tenth of a second at sixty hertz. Long enough that a joint
+            // sitting on a threshold cannot rattle through it, short enough
+            // that a leg genuinely coming back into view is not noticeably
+            // late. Counted in ticks rather than milliseconds because what it
+            // guards against is alternation from one tick to the next.
+            settle_ticks: 6,
         }
     }
 }
 
 /// Why a joint is not in the reconstruction.
 ///
-/// Five different faults with five different repairs, and the panel used to
-/// show one dash for all of them. "Twenty-three of twenty-six joints inferred"
-/// says something is badly wrong and nothing about what: a camera that cannot
-/// see the legs, a pose model that will not commit to them, a calibration that
-/// stopped the rays meeting, and a geometry that cannot place them are four
-/// unrelated problems, and the user's next move is different for each.
+/// Different faults with different repairs, and the panel used to show one dash
+/// for all of them. "Twenty-three of twenty-six joints inferred" says something
+/// is badly wrong and nothing about what: a camera that cannot see the legs, a
+/// pose model that will not commit to them, a calibration that stopped the rays
+/// meeting, and a geometry that cannot place them are four unrelated problems,
+/// and the user's next move is different for each.
+///
+/// The last variant is the odd one: it is not a fault in the room but a joint
+/// that keeps changing its answer, held back until it stops.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Missing {
     /// No camera reported a keypoint here at all. Move a camera, or aim it
@@ -97,6 +113,17 @@ pub enum Missing {
     /// cameras that saw it are too close together, or too nearly in line with
     /// it, to say where along the ray it sits.
     Uncertain { sigma: f64 },
+    /// Solved, and held back anyway because it has only just come back from one
+    /// of the faults above and has not yet stayed. `ticks` is how many more
+    /// consecutive solved ticks it owes.
+    ///
+    /// The one reason here that is not a complaint about the room. A count that
+    /// stays high says joints are passing and failing their tests rather than
+    /// settling on either, which is worth seeing on its own: it is the
+    /// signature of thresholds being sat on, and it means the figures beside it
+    /// are describing a body that keeps changing which joints it is made of.
+    /// See [`crate::fusion::settle`].
+    Settling { ticks: u32 },
 }
 
 impl Missing {
@@ -107,6 +134,7 @@ impl Missing {
             Missing::OneRay => "one ray",
             Missing::Disagreed { .. } => "disagreed",
             Missing::Uncertain { .. } => "too uncertain",
+            Missing::Settling { .. } => "settling",
         }
     }
 
@@ -118,6 +146,7 @@ impl Missing {
             Missing::OneRay => "only one camera can see it",
             Missing::Disagreed { .. } => "the cameras disagree about where it is",
             Missing::Uncertain { .. } => "the cameras that see it cannot place it",
+            Missing::Settling { .. } => "back, but not yet steady enough to use",
         }
     }
 }
@@ -137,11 +166,14 @@ pub struct Tally {
     pub one_ray: usize,
     pub disagreed: usize,
     pub uncertain: usize,
+    /// Solved this tick but held back as not yet steady. Unlike the rest this
+    /// is a count of joints changing their minds rather than of a fault.
+    pub settling: usize,
 }
 
 impl Tally {
     pub fn missing(&self) -> usize {
-        self.unseen + self.unsure + self.one_ray + self.disagreed + self.uncertain
+        self.unseen + self.unsure + self.one_ray + self.disagreed + self.uncertain + self.settling
     }
 
     /// The reason accounting for the most joints, when there are enough of them
@@ -166,6 +198,10 @@ impl Tally {
             (
                 "the cameras that see them cannot place them".to_owned(),
                 self.uncertain,
+            ),
+            (
+                "they keep passing and failing the same test".to_owned(),
+                self.settling,
             ),
         ]
         .into_iter()
@@ -246,6 +282,17 @@ impl Pose3d {
         self.missing.set(joint, why);
     }
 
+    /// Takes back a joint that was set, giving a reason.
+    ///
+    /// Separate from [`Pose3d::miss`] because it has to undo the `set`, and
+    /// because the only caller is the admission pass at the end of the fuse:
+    /// nothing else in this stage decides against a joint it has already
+    /// solved.
+    fn hold_back(&mut self, joint: Joint, why: Missing) {
+        self.joints.clear(joint);
+        self.missing.set(joint, why);
+    }
+
     /// How the body divided up between measured and the reasons it was not.
     pub fn tally(&self) -> Tally {
         let mut tally = Tally {
@@ -259,6 +306,7 @@ impl Pose3d {
                 Missing::OneRay => &mut tally.one_ray,
                 Missing::Disagreed { .. } => &mut tally.disagreed,
                 Missing::Uncertain { .. } => &mut tally.uncertain,
+                Missing::Settling { .. } => &mut tally.settling,
             };
             *slot += 1;
         }
@@ -313,6 +361,7 @@ pub fn fuse(
     views: &[(usize, Aligned)],
     at: Instant,
     options: &FuseOptions,
+    settling: &mut Settling,
 ) -> Pose3d {
     let mut pose = Pose3d::empty(at);
     let mut solved = Vec::with_capacity(Joint::ALL.len());
@@ -399,6 +448,19 @@ pub fn fuse(
                 rejected,
             },
         );
+    }
+
+    // Every test above is a threshold on a quantity that moves between ticks,
+    // so a joint sitting on one of them passes and fails alternately rather
+    // than settling. Run over the whole body rather than only the joints that
+    // were set: a tick a joint missed is what starts it owing a dwell, and the
+    // reason it missed does not matter to that.
+    for joint in Joint::ALL {
+        let solved = pose.get(joint).is_some();
+        let owed = settling.wait(joint, solved, options.settle_ticks);
+        if solved && owed > 0 {
+            pose.hold_back(joint, Missing::Settling { ticks: owed });
+        }
     }
 
     pose
@@ -562,7 +624,13 @@ mod tests {
         let cameras = room();
 
         let honest: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
-        let agreeing = fuse(&cameras, &honest, Instant::now(), &FuseOptions::default());
+        let agreeing = fuse(
+            &cameras,
+            &honest,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
         assert_eq!(
             agreeing.disagreement, 1.0,
             "rays that land exactly where they should claim nothing extra"
@@ -570,7 +638,13 @@ mod tests {
 
         let mut skewed = honest.clone();
         skewed[2] = nudged(&cameras, 2, 0.9, 8.0);
-        let disagreeing = fuse(&cameras, &skewed, Instant::now(), &FuseOptions::default());
+        let disagreeing = fuse(
+            &cameras,
+            &skewed,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
 
         assert!(
             disagreeing.disagreement > 1.8,
@@ -599,12 +673,24 @@ mod tests {
 
         // Nobody offers a keypoint for the wrists, because `body` has none.
         let seen: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
-        let pose = fuse(&cameras, &seen, Instant::now(), &options);
+        let pose = fuse(
+            &cameras,
+            &seen,
+            Instant::now(),
+            &options,
+            &mut Settling::default(),
+        );
         assert_eq!(pose.missing(Joint::LeftWrist), Some(Missing::Unseen));
 
         // Every camera offers one, and none of them believes it.
         let timid: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.1)).collect();
-        let pose = fuse(&cameras, &timid, Instant::now(), &options);
+        let pose = fuse(
+            &cameras,
+            &timid,
+            Instant::now(),
+            &options,
+            &mut Settling::default(),
+        );
         assert!(
             matches!(
                 pose.missing(Joint::Hip),
@@ -615,7 +701,13 @@ mod tests {
         );
 
         // Only one camera can see it, which fixes a direction and nothing else.
-        let pose = fuse(&cameras, &seen[..1], Instant::now(), &options);
+        let pose = fuse(
+            &cameras,
+            &seen[..1],
+            Instant::now(),
+            &options,
+            &mut Settling::default(),
+        );
         assert_eq!(pose.missing(Joint::Hip), Some(Missing::OneRay));
 
         // Two cameras a hand.s width apart: they agree with each other about a
@@ -623,7 +715,13 @@ mod tests {
         // solved and then thrown away for being worthless.
         let grazing = vec![corner(-1.8, -1.8), corner(-1.7, -1.8)];
         let pair: Vec<_> = (0..2).map(|index| view(&grazing, index, 0.9)).collect();
-        let pose = fuse(&grazing, &pair, Instant::now(), &options);
+        let pose = fuse(
+            &grazing,
+            &pair,
+            Instant::now(),
+            &options,
+            &mut Settling::default(),
+        );
         assert!(
             matches!(pose.missing(Joint::Hip), Some(Missing::Uncertain { .. })),
             "expected it to be too uncertain, got {:?}",
@@ -631,7 +729,13 @@ mod tests {
         );
 
         // And the counts are what goes on the panel.
-        let pose = fuse(&cameras, &seen, Instant::now(), &options);
+        let pose = fuse(
+            &cameras,
+            &seen,
+            Instant::now(),
+            &options,
+            &mut Settling::default(),
+        );
         let tally = pose.tally();
         assert_eq!(tally.measured, body().len());
         assert_eq!(
@@ -647,7 +751,13 @@ mod tests {
     fn measuring_the_disagreement_does_not_move_the_body() {
         let cameras = room();
         let views: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
 
         for (joint, truth) in body() {
             let fused = pose.get(joint).expect("every joint was visible");
@@ -658,7 +768,13 @@ mod tests {
     fn a_body_seen_by_three_cameras_comes_back_where_it_was() {
         let cameras = room();
         let views: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
 
         assert_eq!(pose.count(), body().len());
         for (joint, truth) in body() {
@@ -677,7 +793,13 @@ mod tests {
     fn one_camera_alone_reconstructs_nothing() {
         let cameras = room();
         let views = vec![view(&cameras, 0, 0.9)];
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
         assert!(pose.is_empty());
     }
 
@@ -687,7 +809,13 @@ mod tests {
     fn keypoints_below_the_confidence_gate_do_not_vote() {
         let cameras = room();
         let views: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.1)).collect();
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
         assert!(pose.is_empty());
     }
 
@@ -719,7 +847,13 @@ mod tests {
         }
         views[2] = (2, still(broken));
 
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
         let ankle = pose.get(Joint::LeftAnkle).expect("two cameras still agree");
 
         assert_eq!(ankle.rejected, vec![2]);
@@ -743,7 +877,13 @@ mod tests {
         let cameras = vec![corner(-1.8, -1.8), corner(-1.7, -1.8)];
         let views: Vec<_> = (0..2).map(|index| view(&cameras, index, 0.9)).collect();
 
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
         assert!(
             pose.is_empty(),
             "a grazing pair should not be reported as a measurement"
@@ -754,11 +894,76 @@ mod tests {
     fn the_weights_say_which_camera_carried_the_joint() {
         let cameras = room();
         let views: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
-        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+        let pose = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions::default(),
+            &mut Settling::default(),
+        );
 
         let hip = pose.get(Joint::Hip).unwrap();
         let total: f64 = hip.weights.iter().map(|(_, weight)| weight).sum();
         assert!((total - 1.0).abs() < 1e-9);
         assert!(hip.weights.iter().all(|(_, weight)| *weight > 0.0));
+    }
+
+    /// A joint the cameras can only solve on alternate ticks used to alternate
+    /// in the output, and the two answers are far apart: solved, it is where
+    /// the cameras put it; unsolved, the fit invents it from the skeleton. The
+    /// gap between those is the calibration error, so the joint does not
+    /// degrade when it flips, it jumps.
+    #[test]
+    fn a_joint_that_can_only_be_solved_every_other_tick_is_held_out() {
+        let cameras = room();
+        let options = FuseOptions::default();
+        let mut settling = Settling::default();
+
+        let confident: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
+        let timid: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.1)).collect();
+
+        let mut measured = 0;
+        let mut settled_out = 0;
+        for tick in 0..60 {
+            let views = if tick % 2 == 0 { &confident } else { &timid };
+            let pose = fuse(&cameras, views, Instant::now(), &options, &mut settling);
+
+            if pose.get(Joint::Hip).is_some() {
+                measured += 1;
+            }
+            if matches!(pose.missing(Joint::Hip), Some(Missing::Settling { .. })) {
+                settled_out += 1;
+            }
+        }
+
+        // Once, on the first tick, before anything had gone wrong. After that
+        // it can never gather a run of solved ticks.
+        assert_eq!(
+            measured, 1,
+            "an alternating joint reached the output {measured} times in sixty ticks"
+        );
+        assert_eq!(
+            settled_out, 29,
+            "the ticks it was solved but held back should be the other twenty-nine"
+        );
+    }
+
+    /// And the same joint, solved every tick, is not held back at all: the
+    /// dwell is there to stop a joint returning too eagerly, not to tax one
+    /// that never left.
+    #[test]
+    fn a_joint_solved_every_tick_is_never_held_back() {
+        let cameras = room();
+        let options = FuseOptions::default();
+        let mut settling = Settling::default();
+        let views: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
+
+        for tick in 0..60 {
+            let pose = fuse(&cameras, &views, Instant::now(), &options, &mut settling);
+            assert!(
+                pose.get(Joint::Hip).is_some(),
+                "the hip went missing on tick {tick} with nothing wrong"
+            );
+        }
     }
 }

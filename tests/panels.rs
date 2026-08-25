@@ -308,6 +308,7 @@ fn tracked_fusion() -> Fusion {
             unsure: 6,
             one_ray: 2,
             disagreed: 1,
+            settling: 0,
             uncertain: 0,
         },
         shake: optra::fusion::shake::Shake {

@@ -213,8 +213,15 @@ impl TrackingPanel {
         // about what: a camera that cannot see the legs, a model that will not
         // commit to them, a calibration that stopped the rays meeting and a
         // geometry that cannot place them are four unrelated problems with four
-        // different next moves. All five counts are shown whether or not they
+        // different next moves. All six counts are shown whether or not they
         // are zero, so the row never changes shape.
+        //
+        // Settling is the odd one out and is last for that reason: it is not a
+        // fault in the room but a joint that keeps passing and failing the same
+        // test, held back until it stops. A count that stays high says the
+        // thresholds are being sat on, which is worth knowing because it means
+        // the rest of this panel describes a body that keeps changing which
+        // joints it is made of.
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Not measured").weak());
             for (name, count) in [
@@ -223,6 +230,7 @@ impl TrackingPanel {
                 ("one ray", stats.tally.one_ray),
                 ("disagreed", stats.tally.disagreed),
                 ("too uncertain", stats.tally.uncertain),
+                ("settling", stats.tally.settling),
             ] {
                 ui.label(RichText::new(name).weak());
                 ui.label(RichText::new(format!("{count}")).color(if count == 0 {

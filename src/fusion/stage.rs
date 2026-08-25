@@ -42,6 +42,7 @@ use super::fit::{Fitted, Fitter};
 use super::floor::FloorMeter;
 use super::fuse::{Pose3d, Tally, fuse};
 use super::head::HeadMeter;
+use super::settle::Settling;
 use super::shake::{Shake, ShakeMeter, drives_a_tracker};
 
 /// How often the bone measurement is recomputed, in ticks.
@@ -487,6 +488,10 @@ fn run(
     // stage it started shaking at.
     let mut shaking = ShakeMeters::default();
 
+    // Carries across ticks, which is the whole point: what it holds is which
+    // joints have earned their place back.
+    let mut settling = Settling::default();
+
     let mut ticker = Ticker::at_hz(config.rate_hz as f32);
     let mut rate = Rate::default();
     let mut since_measure = 0u32;
@@ -546,7 +551,7 @@ fn run(
             }
         }
 
-        let raw = fuse(&cameras, &views, at, &fuse_options);
+        let raw = fuse(&cameras, &views, at, &fuse_options, &mut settling);
 
         // Measured from the reconstruction, never from the fitted result: the
         // fit already holds the body to this measurement, so measuring its

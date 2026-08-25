@@ -12,5 +12,6 @@ pub mod fit;
 pub mod floor;
 pub mod fuse;
 pub mod head;
+pub mod settle;
 pub mod shake;
 pub mod stage;

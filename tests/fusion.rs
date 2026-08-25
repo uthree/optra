@@ -20,6 +20,7 @@ use optra::fusion::bones::BoneMeter;
 use optra::fusion::filter::{FilterOptions, PoseFilter};
 use optra::fusion::fit::Fitter;
 use optra::fusion::fuse::{FuseOptions, fuse};
+use optra::fusion::settle::Settling;
 use optra::geometry::camera::{Camera, Intrinsics};
 use optra::geometry::lens::Lens;
 use optra::infer::traits::{Keypoint, Keypoints2d};
@@ -250,6 +251,8 @@ fn walk(honour_latency: bool, hide: Option<Joint>) -> Outcome {
     let options = FuseOptions::default();
     let filter_options = FilterOptions::default();
     let mut meter = BoneMeter::default();
+    // Persistent across ticks, as the fusion stage keeps it.
+    let mut settling = Settling::default();
     let mut fitter = Fitter::default();
     let mut filter = PoseFilter::new(filter_options.clone());
     let mut skeleton = meter.finish();
@@ -300,7 +303,7 @@ fn walk(honour_latency: bool, hide: Option<Joint>) -> Outcome {
         }
 
         let elapsed = at.duration_since(start);
-        let reconstruction = fuse(&cameras, &views, at, &options);
+        let reconstruction = fuse(&cameras, &views, at, &options, &mut settling);
 
         meter.observe(&reconstruction);
         if tick.is_multiple_of(60) {
@@ -464,6 +467,7 @@ fn the_bones_are_measured_from_the_walk() {
     let start = Instant::now() + Duration::from_secs(30);
     let mut noise = Noise(0x1234_5678);
     let mut meter = BoneMeter::default();
+    let mut settling = Settling::default();
 
     for tick in 0..360 {
         let now = start + Duration::from_micros(16_667).mul_f64(tick as f64);
@@ -481,7 +485,13 @@ fn the_bones_are_measured_from_the_walk() {
                 views.push((index, align(&before, &after, sampled_at)));
             }
         }
-        meter.observe(&fuse(&cameras, &views, at, &FuseOptions::default()));
+        meter.observe(&fuse(
+            &cameras,
+            &views,
+            at,
+            &FuseOptions::default(),
+            &mut settling,
+        ));
     }
 
     let skeleton = meter.finish();
