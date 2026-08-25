@@ -573,10 +573,9 @@ fn cameras(ui: &mut egui::Ui, stats: &FusionStats) {
                         },
                     ),
                 );
-                ui.label(if camera.latency_ms > 0.0 {
-                    format!("{:.0} ms", camera.latency_ms)
-                } else {
-                    "not measured".to_owned()
+                ui.label(match camera.latency_ms {
+                    Some(ms) => format!("{ms:.0} ms"),
+                    None => "not measured".to_owned(),
                 });
                 ui.end_row();
             }

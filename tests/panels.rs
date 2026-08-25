@@ -323,7 +323,9 @@ fn tracked_fusion() -> Fusion {
                 aligned: 1.0,
                 weight: 0.5,
                 rejected: 0.02,
-                latency_ms: 0.0,
+                // Measured, and the answer is zero. A prompt camera, not an
+                // unmeasured one, and the row has to be able to say which.
+                latency_ms: Some(0.0),
                 problem: None,
             },
             CameraContribution {
@@ -331,7 +333,7 @@ fn tracked_fusion() -> Fusion {
                 aligned: 0.6,
                 weight: 0.3,
                 rejected: 0.45,
-                latency_ms: 42.0,
+                latency_ms: Some(42.0),
                 problem: None,
             },
             CameraContribution {
@@ -339,7 +341,8 @@ fn tracked_fusion() -> Fusion {
                 aligned: 0.0,
                 weight: 0.0,
                 rejected: 0.0,
-                latency_ms: 0.0,
+                // The walk could not pin one down.
+                latency_ms: None,
                 problem: Some("running at 640x480, calibrated at 1280x720".to_owned()),
             },
         ],

@@ -78,8 +78,13 @@ pub struct CameraContribution {
     /// Fraction of its rays dropped for disagreeing with the others. Steadily
     /// high means this camera is mis-calibrated or badly placed.
     pub rejected: f32,
-    /// The delay the calibration measured for it, in milliseconds.
-    pub latency_ms: f32,
+    /// The delay the calibration measured for it, in milliseconds, when the
+    /// walk was brisk enough to measure one.
+    ///
+    /// `Some(0.0)` and `None` are different claims and the panel says so: a
+    /// camera that hands frames over promptly measures zero, and reporting that
+    /// as an unmeasured delay makes a working camera look like a broken one.
+    pub latency_ms: Option<f32>,
     /// Why this camera is not being used, when it is not.
     pub problem: Option<String>,
 }
@@ -223,11 +228,15 @@ impl Fusion {
                 // A latency the walk was too slow to pin down was reported and
                 // not applied, and it must not be applied here either: a delay
                 // guessed off a flat curve is worse than no delay at all.
+                //
+                // Kept as an option rather than collapsed to zero, because zero
+                // is a perfectly ordinary answer -- a camera handing frames over
+                // promptly measures zero -- and a panel that cannot tell it from
+                // a failed measurement reports a working camera as broken.
                 latency: calibrated
                     .latency
                     .filter(|estimate| estimate.is_confident())
-                    .map(|estimate| estimate.latency)
-                    .unwrap_or_default(),
+                    .map(|estimate| estimate.latency),
                 behind: 0.0,
                 admitted: true,
                 flipping: None,
@@ -277,7 +286,10 @@ struct Tracked {
     id: String,
     poses: Arc<PoseChannel>,
     camera: Camera,
-    latency: Duration,
+    /// Measured delay from light landing to timestamp, when the walk was brisk
+    /// enough to measure it. `Some(ZERO)` is a camera that is genuinely prompt;
+    /// `None` is one nobody could tell about. They are not the same claim.
+    latency: Option<Duration>,
     /// Worst recent staleness of this camera.s newest frame, in seconds. Rises
     /// at once and decays slowly, so the clock is set by what the camera does
     /// on a bad tick rather than on a lucky one.
@@ -299,7 +311,7 @@ impl Tracked {
     /// the tick: what its timestamps are early by, plus how stale its newest
     /// frame gets, plus the margin.
     fn wait(&self, slack: Duration) -> Duration {
-        self.latency + Duration::from_secs_f64(self.behind.max(0.0)) + slack
+        self.latency.unwrap_or_default() + Duration::from_secs_f64(self.behind.max(0.0)) + slack
     }
 
     /// Adjusts the calibrated optics to the resolution the camera is actually
@@ -531,7 +543,7 @@ fn run(
             // The frame that shows the world at `at` is stamped a latency
             // later, because that is when it arrived rather than when the light
             // landed on the sensor.
-            let sampled_at = at + camera.latency;
+            let sampled_at = at + camera.latency.unwrap_or_default();
 
             let bracket = camera.poses.bracket(sampled_at);
             let usable = match &bracket {
@@ -698,7 +710,7 @@ fn publish(
             aligned: camera.aligned,
             weight: camera.weight,
             rejected: camera.rejected,
-            latency_ms: camera.latency.as_secs_f32() * 1000.0,
+            latency_ms: camera.latency.map(|delay| delay.as_secs_f32() * 1000.0),
             problem: camera.problem.clone().or_else(|| camera.lateness.clone()),
         })
         .collect();
@@ -903,7 +915,7 @@ mod tests {
             id: id.to_owned(),
             poses: Arc::new(PoseChannel::default()),
             camera: camera(),
-            latency: Duration::ZERO,
+            latency: Some(Duration::ZERO),
             behind: 0.0,
             admitted: true,
             flipping: None,
