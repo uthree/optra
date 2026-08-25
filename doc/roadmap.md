@@ -224,6 +224,19 @@ Three things came out of building it, all recorded in
   no bend plane and a standing person's knees are straight; a foot without heel
   and toe keypoints has no yaw of its own. Both fall back to the hip axis.
 
+First run in VRChat: the trackers were recognised over OSC and the coordinate
+conversions held, but the body vibrated on the spot. The cause was in the
+filter rather than in anything this milestone added -- the prediction was
+riding on an unsmoothed velocity, and the term that pays back the smoothing lag
+is scaled by the largest number in the filter exactly when the joint is still.
+See section 9.5 of [design.md](design.md); the fix cost 1.9 cm on a simulated
+walk and made a standing body steadier than its own measurement noise.
+
+The layout tests could not have caught it, and neither could the filter tests as
+they stood: they judged the *smoothed position*, and what the output stage sends
+is the *prediction*, which reaches further. Testing the wrong end of a filter is
+an easy thing to do for a long time.
+
 Untested against a real consumer: everything downstream is another process, so
 the tests send to a loopback socket and decode what arrived. The conversions
 they check are the ones this project believes are right, which is not the same

@@ -236,6 +236,7 @@ fn run(
         .collect();
 
     let max_sigma = config.max_sigma as f64;
+    let ceiling = config.max_lead_ms as f64 / 1000.0;
     let offsets = config.offsets();
 
     loop {
@@ -248,11 +249,12 @@ fn run(
 
         let (trackers, lead, problem) = match frame.as_deref() {
             Some(frame) if now.saturating_duration_since(frame.filtered.at) < STALE => {
-                let posture = Posture::predicted(&frame.filtered, now);
-                let lead = now
+                let posture = Posture::predicted(&frame.filtered, now, ceiling);
+                let lead = (now
                     .saturating_duration_since(frame.filtered.at)
                     .as_secs_f64()
-                    + frame.filtered.horizon.as_secs_f64();
+                    + frame.filtered.horizon.as_secs_f64())
+                .min(ceiling);
 
                 let trackers = indices
                     .iter()

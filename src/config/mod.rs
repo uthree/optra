@@ -402,6 +402,20 @@ pub struct OutputConfig {
     /// which saves configuring the same thing twice — but a user who has set
     /// it themselves may want theirs left alone.
     pub vmt_send_room_matrix: bool,
+    /// Furthest ahead of the reconstruction the output may extrapolate, in
+    /// milliseconds.
+    ///
+    /// A cap on *time*, unlike the distance limit inside the filter. What it
+    /// bounds is how much of what goes out is a guess: the fusion lag is
+    /// measured rather than configured, and if the cameras are slow it can be
+    /// most of the total on its own. Past a point a lagging body beats a
+    /// guessed one.
+    ///
+    /// It is also how a user finds out whether prediction is what is wrong with
+    /// their tracking. Set to zero, nothing is extrapolated at all and the
+    /// trackers show where the cameras last saw the body — which is late, but
+    /// if it is also *still*, the answer is here rather than upstream.
+    pub max_lead_ms: u32,
     /// Positional uncertainty past which a tracker is not sent, in metres.
     pub max_sigma: f32,
     pub trackers: Vec<TrackerConfig>,
@@ -416,6 +430,7 @@ impl Default for OutputConfig {
             vrchat_target: crate::output::vrchat::DEFAULT_TARGET.to_owned(),
             vmt_target: crate::output::vmt::DEFAULT_TARGET.to_owned(),
             vmt_send_room_matrix: true,
+            max_lead_ms: 150,
             max_sigma: 0.08,
             trackers: crate::output::TrackerRole::ALL
                 .iter()

@@ -294,6 +294,24 @@ impl OutputPanel {
         ui.add_space(6.0);
         changed |= ui
             .add(
+                egui::Slider::new(&mut ctx.config.output.max_lead_ms, 0..=300)
+                    .text("Predict at most (ms)"),
+            )
+            .changed();
+        ui.label(
+            RichText::new(
+                "The time from a camera exposing a frame to a body existing is measured and \
+                 predicted through, so this caps the total rather than setting it. Turn it \
+                 down to zero if the trackers are shaking: nothing is guessed at all then, so \
+                 the body comes out late, and if it also comes out steady the trouble is here \
+                 rather than in the cameras.",
+            )
+            .weak(),
+        );
+
+        ui.add_space(6.0);
+        changed |= ui
+            .add(
                 egui::Slider::new(&mut ctx.config.output.max_sigma, 0.02..=0.30)
                     .text("Withhold past (m)"),
             )

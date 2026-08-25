@@ -112,7 +112,7 @@ fn a_standing_body_arrives_at_vrchat_as_three_trackers_and_a_head() {
     let mut sink = VrchatOsc::open(&address, assign(&roles)).expect("a socket");
 
     let at = Instant::now();
-    let posture = Posture::predicted(&walking(at), at);
+    let posture = Posture::predicted(&walking(at), at, 1.0);
     let trackers: Vec<_> = roles
         .iter()
         .filter_map(|role| posture.derive(*role))
@@ -191,7 +191,7 @@ fn the_same_body_arrives_at_vmt_unconverted() {
     let mut sink = Vmt::open(&address, assign(&roles), None).expect("a socket");
 
     let at = Instant::now();
-    let posture = Posture::predicted(&walking(at), at);
+    let posture = Posture::predicted(&walking(at), at, 1.0);
     let trackers: Vec<_> = roles
         .iter()
         .filter_map(|role| posture.derive(*role))
@@ -240,7 +240,7 @@ fn consecutive_sends_of_one_frame_move_the_trackers() {
     let mut sent = Vec::new();
     for step in [0u64, 11, 22] {
         let now = at + Duration::from_millis(step);
-        let posture = Posture::predicted(&filtered, now);
+        let posture = Posture::predicted(&filtered, now, 1.0);
         sink.send(&TrackerFrame {
             at: now,
             lead: 0.06,
@@ -274,7 +274,7 @@ fn a_lost_tracker_is_disabled_in_vmt() {
     let mut sink = Vmt::open(&address, assign(&roles), None).expect("a socket");
 
     let at = Instant::now();
-    let posture = Posture::predicted(&walking(at), at);
+    let posture = Posture::predicted(&walking(at), at, 1.0);
 
     sink.send(&TrackerFrame {
         at,
@@ -347,11 +347,38 @@ fn a_body_with_no_upper_half_still_sends_its_feet() {
     }
     filtered = lower;
 
-    let posture = Posture::predicted(&filtered, at);
+    let posture = Posture::predicted(&filtered, at, 1.0);
 
     assert!(posture.derive(TrackerRole::LeftFoot).is_some());
     assert!(posture.derive(TrackerRole::RightFoot).is_some());
     assert!(posture.derive(TrackerRole::LeftKnee).is_some());
     // The hips need the spine to know which way up they are, and there is none.
     assert!(posture.derive(TrackerRole::Hip).is_none());
+}
+
+/// The lever a user reaches for when the trackers shake: with the cap at zero
+/// nothing is extrapolated at all, so what goes out is exactly where the
+/// cameras last put the body. Late, but if it is also steady then the trouble
+/// is the prediction and not the reconstruction — which is a thing worth being
+/// able to establish in ten seconds rather than by argument.
+#[test]
+fn capping_the_lead_at_zero_sends_the_body_where_it_was() {
+    let at = Instant::now();
+    let filtered = walking(at);
+
+    let unpredicted = Posture::predicted(&filtered, at + Duration::from_millis(120), 0.0);
+    let hip = unpredicted.point(Joint::Hip).unwrap();
+    let measured = filtered.position(Joint::Hip).unwrap();
+
+    assert!(
+        (hip - measured).norm() < 1e-12,
+        "the cap was zero and the hip still moved {:?}",
+        hip - measured
+    );
+
+    // And the same instant with a cap on does move it, or the test above would
+    // pass for the wrong reason.
+    let predicted = Posture::predicted(&filtered, at + Duration::from_millis(120), 0.15);
+    let moved = (predicted.point(Joint::Hip).unwrap() - measured).norm();
+    assert!(moved > 0.05, "the uncapped prediction only moved {moved} m");
 }

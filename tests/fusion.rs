@@ -371,6 +371,17 @@ fn walk(honour_latency: bool, hide: Option<Joint>) -> Outcome {
 fn a_walk_past_three_unlike_cameras_is_reconstructed() {
     let outcome = walk(true, None);
 
+    // Printed rather than only asserted: these four numbers are how every
+    // change to the filter gets judged, and reading them off a passing run
+    // beats provoking a failure to see them.
+    eprintln!(
+        "raw {:.1} cm  filtered {:.1} cm  predicted {:.1} cm  stale {:.1} cm",
+        outcome.raw * 100.0,
+        outcome.filtered * 100.0,
+        outcome.predicted * 100.0,
+        outcome.stale * 100.0
+    );
+
     assert!(
         outcome.ticks > 200,
         "only {} ticks produced anything",
@@ -425,8 +436,17 @@ fn the_prediction_lands_ahead_of_the_measurement() {
     );
     // The comparison that matters: handing over the current answer as though
     // it were the future one, which is what no prediction looks like.
+    //
+    // The bar was half and is now three fifths, which is a real loss and worth
+    // naming. Weighing each velocity against how well it is known costs about
+    // two centimetres here — this walk is simulated with millimetre-accurate
+    // joints, so its velocities are far better determined than a real room's,
+    // and the caution buys least exactly where it is measured. What it buys is
+    // a body that does not vibrate when it is standing still, which is the
+    // state a user spends most of their time in and the one that made the first
+    // build unusable. See `filter::tests::a_still_joint_is_predicted_still`.
     assert!(
-        outcome.predicted < 0.5 * outcome.stale,
+        outcome.predicted < 0.6 * outcome.stale,
         "predicted {:.1} cm against {:.1} cm with no prediction",
         outcome.predicted * 100.0,
         outcome.stale * 100.0

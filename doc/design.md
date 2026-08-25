@@ -939,6 +939,61 @@ than a short patience has its filter discarded rather than resumed — after a
 second out of sight the user is somewhere else, and carrying the old velocity
 across the gap would fling the prediction.
 
+### 9.5 A velocity is only worth acting on if it is known
+
+The first build that reached VRChat produced a body that vibrated on the spot,
+and the cause was everything above being right about the position and careless
+about the velocity.
+
+What goes out is `smoothed + velocity × (horizon + tau)`. The first term is
+low-passed hard; adding an unsmoothed second term to it puts all of that noise
+straight back, multiplied by a fifth of a second. And it is worst exactly where
+it can least be afforded: `tau` is *largest* when the joint is still, so the
+term meant to repay a smoothing lag there is no motion to have lagged behind is
+scaled by the largest number in the filter. A joint smoothed to a little over a
+hertz was being sent out shaking by two centimetres.
+
+Two things that look like fixes are not. Low-passing the velocity does quiet a
+still joint, but a low pass lags by its time constant and the error that costs
+is acceleration times that lag — worst during a stride, which is the one moment
+prediction earns its keep. Measured: 9 cm out on the simulated walk against 5 cm
+unsmoothed, which is most of the benefit of predicting at all. Judging the noise
+from a *running average* of the velocity rather than from the current sample is
+worse still (7.3 cm against 6.5), because the average holds the gain open
+through exactly the moments the velocity is small and mostly noise.
+
+What works is to weigh each velocity against how well it is known. The Kalman
+has carried a velocity variance all along and nothing ever read it; subtracting
+that noise power from the observed power leaves the part of the velocity that is
+genuinely distinguishable from standing still, and the square root of the ratio
+is the scale that recovers it. Per axis, because a foot travelling along one
+axis is standing still along the other two and pooling them lets the noise it is
+still in eat the motion it is making. Nothing is thresholded and nothing snaps: a
+joint moving clear of its noise floor passes through untouched, one buried in it
+scales to nothing, and in between it fades. It costs no lag, which is what makes
+it usable mid-stride.
+
+It is not free. On the simulated walk the prediction went from 4.6 cm to 6.5 cm
+against 12.2 cm unpredicted — but that walk is built from millimetre-accurate
+joints, so its velocities are far better determined than a real room's and the
+caution buys least precisely where it is measured. Since the velocity now has to
+earn its keep, it became worth estimating better, and the process noise came
+down from 8 m/s² to 5: below that the position starts lagging and above it the
+velocity estimate is no better than a two-frame difference.
+
+Separately, a joint that has been out of sight for more than a few frames has
+its velocity discarded rather than inferred across the gap. A constant-velocity
+filter handed a measurement after a silence divides the whole distance the joint
+travelled by the whole time it was missing and calls that a velocity; it is not
+one, nothing was watching, and multiplying it by the horizon is how a foot that
+was merely occluded ends up thrown across the room.
+
+The output stage also caps how far ahead it will extrapolate. That cap is a
+user setting, and its real job is diagnostic: set to zero, nothing is guessed at
+all, so the trackers show where the cameras last saw the body. Late — but if it
+is also *steady*, the trouble is in this section rather than in the cameras, and
+that is a thing worth being able to establish in ten seconds.
+
 Latency budget (rough, 4 cameras at 720p):
 
 | Stage | Typical |

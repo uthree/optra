@@ -169,7 +169,11 @@ impl Posture {
     /// age plus the delay still to come, which means a frame sent again while
     /// waiting for the next one is predicted further forward each time rather
     /// than repeating itself.
-    pub fn predicted(filtered: &Filtered, at: Instant) -> Self {
+    ///
+    /// How far ahead it reaches is capped by `ceiling` seconds. Zero turns
+    /// prediction off entirely, which is the one setting that says for certain
+    /// whether prediction is what is wrong with somebody's tracking.
+    pub fn predicted(filtered: &Filtered, at: Instant, ceiling: f64) -> Self {
         let mut posture = Posture::empty(at);
 
         // Signed: a send instant behind the reconstruction is not a negative
@@ -181,13 +185,14 @@ impl Posture {
         };
 
         for (joint, state) in filtered.iter() {
+            // `lead` is the configured horizon plus whatever smoothing lag this
+            // joint is owed, measured from the frame's own instant, so the age
+            // is all that has to be added.
+            let ahead = (age + state.lead).min(ceiling);
             posture.set(
                 joint,
                 PostureJoint {
-                    // `lead` is the configured horizon plus whatever smoothing
-                    // lag this joint is owed, measured from the frame's own
-                    // instant, so the age is all that has to be added.
-                    point: state.extrapolate(age + state.lead, filtered.limit),
+                    point: state.extrapolate(ahead, filtered.limit),
                     sigma: state.sigma,
                     inferred: state.inferred,
                 },
@@ -737,8 +742,8 @@ mod tests {
             },
         );
 
-        let sooner = Posture::predicted(&filtered, at + Duration::from_millis(10));
-        let later = Posture::predicted(&filtered, at + Duration::from_millis(21));
+        let sooner = Posture::predicted(&filtered, at + Duration::from_millis(10), 1.0);
+        let later = Posture::predicted(&filtered, at + Duration::from_millis(21), 1.0);
 
         let sooner = sooner.point(Joint::LeftAnkle).unwrap();
         let later = later.point(Joint::LeftAnkle).unwrap();
@@ -781,7 +786,7 @@ mod tests {
             },
         );
 
-        let posture = Posture::predicted(&filtered, at + Duration::from_millis(500));
+        let posture = Posture::predicted(&filtered, at + Duration::from_millis(500), 1.0);
         let ankle = posture.point(Joint::LeftAnkle).unwrap();
         assert!(
             ankle.coords.norm() <= options.max_prediction + 1e-9,
