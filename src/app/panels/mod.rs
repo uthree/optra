@@ -85,15 +85,10 @@ pub struct PanelContext<'a> {
     pub fusion: &'a mut crate::fusion::stage::Fusion,
     /// Why fusion is not running, when the shell could not start it.
     pub fusion_problem: Option<&'a str>,
+    /// The output stage, which sends what fusion reconstructs.
+    pub sender: &'a mut crate::output::stage::Output,
+    /// Why the output stage is not running, when the shell could not start it.
+    pub output_problem: Option<&'a str>,
     /// Set by a panel when it changed the config, so the shell can save it.
     pub dirty: bool,
-}
-
-/// Placeholder body for panels whose milestone has not landed yet.
-pub(crate) fn not_yet_implemented(ui: &mut egui::Ui, milestone: &str, items: &[&str]) {
-    ui.label(format!("Arrives in milestone {milestone}."));
-    ui.add_space(8.0);
-    for item in items {
-        ui.label(format!("\u{2022} {item}"));
-    }
 }

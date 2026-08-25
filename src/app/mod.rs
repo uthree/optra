@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::fusion::bones::Skeleton;
 use crate::fusion::stage::Fusion;
 use crate::logging::LogBuffer;
+use crate::output::stage::Output;
 use crate::pipeline::Pipeline;
 use crate::vr::VrLink;
 use crate::worker::{Supervisor, WorkerEvent};
@@ -20,6 +21,11 @@ use panels::{Panel, PanelContext};
 
 /// How long to wait after the last change before writing the config.
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
+
+/// How long the output settings must hold still before the stage is restarted
+/// with them. Long enough to cover a slider drag, short enough that a user who
+/// changed the port does not wonder whether it took.
+const OUTPUT_SETTLE: Duration = Duration::from_millis(500);
 
 pub struct OptraApp {
     config: Config,
@@ -36,12 +42,23 @@ pub struct OptraApp {
     body: Skeleton,
     /// Why fusion is not running, when it should be.
     fusion_problem: Option<String>,
+    /// Sends the reconstructed body to VRChat or SteamVR.
+    sender: Output,
+    /// Why the output stage is not running, when it should be.
+    output_problem: Option<String>,
+    /// The output settings the running stage was started with. A change to any
+    /// of them means the socket, the tracker numbering or the send clock is
+    /// wrong, and none of those can be adjusted from outside the thread.
+    sending_with: Option<crate::config::OutputConfig>,
+    /// When the output settings last changed, so a slider being dragged does
+    /// not restart the stage on every frame of the drag.
+    output_changed_at: Option<Instant>,
 
     cameras: panels::cameras::CamerasPanel,
     models: panels::models::ModelsPanel,
     calibration: panels::calibration::CalibrationPanel,
     tracking: panels::tracking::TrackingPanel,
-    output: panels::output::OutputPanel,
+    output_panel: panels::output::OutputPanel,
     log_panel: panels::log::LogPanel,
 
     /// Set when the config changed; cleared once it has been written.
@@ -96,11 +113,15 @@ impl OptraApp {
             fusion: Fusion::default(),
             body: Skeleton::load_or_default(),
             fusion_problem: None,
+            sender: Output::default(),
+            output_problem: None,
+            sending_with: None,
+            output_changed_at: None,
             cameras: Default::default(),
             models: Default::default(),
             calibration: Default::default(),
             tracking: Default::default(),
-            output: Default::default(),
+            output_panel: Default::default(),
             log_panel: Default::default(),
             dirty_since: None,
             failures: Vec::new(),
@@ -195,6 +216,71 @@ impl OptraApp {
             .err();
     }
 
+    /// Starts, stops and restarts the output stage.
+    ///
+    /// Everything the stage needs is fixed when it is built — the socket, the
+    /// tracker numbering, the clock — so a settings change means a restart
+    /// rather than an adjustment. That is cheap, but not cheap enough to do on
+    /// every frame of a slider being dragged, so a change has to settle first.
+    fn sync_output(&mut self) {
+        let wanted = self.config.output.enabled && self.fusion.is_running();
+
+        if !wanted {
+            if self.sender.is_running() {
+                self.sender.stop();
+            }
+            self.sending_with = None;
+            self.output_problem = None;
+            return;
+        }
+
+        // A stage running with settings that no longer match is stopped as soon
+        // as the change is noticed, rather than left sending against the old
+        // ones until the drag ends. Stopping is instant; starting is what waits.
+        let stale = self
+            .sending_with
+            .as_ref()
+            .is_some_and(|running| running != &self.config.output);
+        if stale {
+            self.sender.stop();
+            self.sending_with = None;
+            self.output_changed_at = Some(Instant::now());
+        }
+
+        if self.sender.is_running() {
+            return;
+        }
+
+        if self
+            .output_changed_at
+            .is_some_and(|at| at.elapsed() < OUTPUT_SETTLE)
+        {
+            return;
+        }
+        self.output_changed_at = None;
+
+        let Some(fusion) = self.fusion.channel().cloned() else {
+            return;
+        };
+
+        self.output_problem = self
+            .sender
+            .start(
+                &self.config.output,
+                fusion,
+                self.vr.channel().cloned(),
+                &mut self.supervisor,
+            )
+            .err();
+
+        // Only remember the settings that actually started something. Storing
+        // them regardless would make a failed start look current, and it would
+        // never be retried.
+        if self.output_problem.is_none() {
+            self.sending_with = Some(self.config.output.clone());
+        }
+    }
+
     /// Keeps the body measurement the fusion stage refined, so the next launch
     /// starts from a skeleton rather than from nothing.
     fn save_body(&mut self) {
@@ -275,6 +361,8 @@ impl OptraApp {
             room: &mut self.room,
             fusion: &mut self.fusion,
             fusion_problem: self.fusion_problem.as_deref(),
+            sender: &mut self.sender,
+            output_problem: self.output_problem.as_deref(),
             dirty: false,
         };
 
@@ -283,7 +371,7 @@ impl OptraApp {
             Panel::Models => self.models.ui(ui, &mut panel_ctx),
             Panel::Calibration => self.calibration.ui(ui, &mut panel_ctx),
             Panel::Tracking => self.tracking.ui(ui, &mut panel_ctx),
-            Panel::Output => self.output.ui(ui, &mut panel_ctx),
+            Panel::Output => self.output_panel.ui(ui, &mut panel_ctx),
             Panel::Log => self.log_panel.ui(ui, &mut panel_ctx),
         }
 
@@ -319,6 +407,7 @@ impl eframe::App for OptraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_worker_events();
         self.sync_fusion();
+        self.sync_output();
         self.track_window_geometry(ui.ctx());
 
         self.nav(ui);
@@ -354,6 +443,9 @@ impl eframe::App for OptraApp {
     fn on_exit(&mut self) {
         // Cameras first: their threads are the ones the supervisor waits on.
         self.save_body();
+        // The output stage before fusion: it has a goodbye to send, and it
+        // cannot send it once the body it describes has stopped arriving.
+        self.sender.stop();
         self.fusion.stop();
         self.recorder.stop();
         self.pipeline.stop();

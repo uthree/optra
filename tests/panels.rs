@@ -15,6 +15,7 @@ use optra::capture::CaptureManager;
 use optra::config::{CameraConfig, Config, SourceConfig};
 use optra::fusion::stage::Fusion;
 use optra::logging::LogBuffer;
+use optra::output::stage::Output;
 use optra::pipeline::Pipeline;
 use optra::vr::VrLink;
 use optra::worker::Supervisor;
@@ -30,6 +31,7 @@ fn draw_every_panel(config: Config) {
     let mut recorder = Recorder::default();
     let mut room: Option<RoomCalibration> = None;
     let mut fusion = Fusion::default();
+    let mut sender = Output::default();
 
     let mut cameras_panel = cameras::CamerasPanel::default();
     let mut models_panel = models::ModelsPanel::default();
@@ -57,6 +59,8 @@ fn draw_every_panel(config: Config) {
                         room: &mut room,
                         fusion: &mut fusion,
                         fusion_problem: None,
+                        sender: &mut sender,
+                        output_problem: None,
                         dirty: false,
                     };
 
@@ -176,6 +180,7 @@ fn a_solved_room_lays_out() {
     let mut recorder = Recorder::default();
     let mut loaded = Some(room);
     let mut fusion = Fusion::default();
+    let mut sender = Output::default();
     let mut panel = calibration::CalibrationPanel::default();
 
     let ctx = egui::Context::default();
@@ -192,6 +197,8 @@ fn a_solved_room_lays_out() {
                 room: &mut loaded,
                 fusion: &mut fusion,
                 fusion_problem: None,
+                sender: &mut sender,
+                output_problem: None,
                 dirty: false,
             };
             panel.ui(ui, &mut panel_ctx);
@@ -330,6 +337,40 @@ fn tracked_fusion() -> Fusion {
     )
 }
 
+/// An output stage that is sending, with one tracker in each state the panel
+/// formats differently: healthy, patchy, inferred, and lost.
+fn sending_output() -> Output {
+    use optra::config::OutputConfig;
+    use optra::output::stage::{OutputStats, TrackerReport};
+
+    let config = OutputConfig::default();
+    let trackers = optra::output::assign(&config.enabled_roles())
+        .into_iter()
+        .enumerate()
+        .map(|(position, (index, role))| TrackerReport {
+            role,
+            index,
+            live: [1.0, 0.6, 0.0][position % 3],
+            sigma: [0.008, 0.035, 0.09][position % 3],
+            inferred: position == 1,
+            lost: position % 3 == 2,
+        })
+        .collect();
+
+    Output::detached(OutputStats {
+        running: true,
+        sink: "VRChat OSC".to_owned(),
+        target: "127.0.0.1:9000".to_owned(),
+        rate: 89.6,
+        sent: 12_403,
+        lead_ms: 118.0,
+        head: true,
+        trackers,
+        problem: None,
+        warning: Some("right foot not reaching the trackers".to_owned()),
+    })
+}
+
 #[test]
 fn a_tracked_body_lays_out() {
     let mut config = Config::default();
@@ -341,6 +382,7 @@ fn a_tracked_body_lays_out() {
     let mut recorder = Recorder::default();
     let mut room = None;
     let mut fusion = tracked_fusion();
+    let mut sender = sending_output();
     let mut panel = tracking::TrackingPanel::default();
 
     let ctx = egui::Context::default();
@@ -360,6 +402,8 @@ fn a_tracked_body_lays_out() {
                     room: &mut room,
                     fusion: &mut fusion,
                     fusion_problem: None,
+                    sender: &mut sender,
+                    output_problem: None,
                     dirty: false,
                 };
                 panel.ui(ui, &mut panel_ctx);
@@ -393,6 +437,7 @@ fn no_panel_spills_out_of_a_short_window() {
     let mut recorder = Recorder::default();
     let mut room: Option<RoomCalibration> = None;
     let mut fusion = tracked_fusion();
+    let mut sender = sending_output();
 
     let mut cameras_panel = cameras::CamerasPanel::default();
     let mut models_panel = models::ModelsPanel::default();
@@ -428,6 +473,8 @@ fn no_panel_spills_out_of_a_short_window() {
                         room: &mut room,
                         fusion: &mut fusion,
                         fusion_problem: None,
+                        sender: &mut sender,
+                        output_problem: None,
                         dirty: false,
                     };
 
@@ -466,4 +513,76 @@ fn no_panel_spills_out_of_a_short_window() {
     }
 
     supervisor.shutdown();
+}
+
+/// The output panel with trackers actually going out. Everything that makes it
+/// worth looking at — the live percentages, the uncertainties, the lost row —
+/// is only drawn once a stage is running, which no test machine has.
+#[test]
+fn a_sending_output_lays_out() {
+    let mut config = Config::default();
+    let log = LogBuffer::default();
+    let mut supervisor = Supervisor::new();
+    let mut capture = CaptureManager::default();
+    let mut pipeline = Pipeline::default();
+    let mut vr = VrLink::default();
+    let mut recorder = Recorder::default();
+    let mut room = None;
+    let mut fusion = tracked_fusion();
+    let mut sender = sending_output();
+    let mut panel = output::OutputPanel;
+
+    let ctx = egui::Context::default();
+    // Twice, so the collapsing sections draw their bodies.
+    for _ in 0..2 {
+        let mut drawn = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut panel_ctx = PanelContext {
+                    config: &mut config,
+                    log: &log,
+                    supervisor: &mut supervisor,
+                    capture: &mut capture,
+                    pipeline: &mut pipeline,
+                    vr: &mut vr,
+                    recorder: &mut recorder,
+                    room: &mut room,
+                    fusion: &mut fusion,
+                    fusion_problem: None,
+                    sender: &mut sender,
+                    output_problem: None,
+                    dirty: false,
+                };
+                panel.ui(ui, &mut panel_ctx);
+            });
+        });
+        drawn.textures_delta.clear();
+    }
+
+    // The panel fills in any role a config from an older build is missing, and
+    // getting that wrong would silently hide a tracker rather than crash.
+    assert_eq!(
+        config.output.trackers.len(),
+        optra::output::TrackerRole::ALL.len()
+    );
+
+    supervisor.shutdown();
+}
+
+/// A config written before a tracker existed must not leave that tracker
+/// unreachable: there would be no way to turn it on from the panel it is
+/// missing from.
+#[test]
+fn a_config_missing_a_tracker_gains_it() {
+    use optra::config::OutputConfig;
+    use optra::output::TrackerRole;
+
+    let mut config = OutputConfig {
+        trackers: Vec::new(),
+        ..OutputConfig::default()
+    };
+    config.complete();
+
+    assert_eq!(config.trackers.len(), TrackerRole::ALL.len());
+    // Added, not enabled: turning a tracker on is the user's decision.
+    assert!(config.enabled_roles().is_empty());
 }
