@@ -107,36 +107,26 @@ impl OutputPanel {
             ui.add_space(6.0);
         }
 
-        for (needed, met, where_to_go) in [
-            (
-                "Output enabled",
-                ctx.config.output.enabled,
-                "turn it on under Settings below",
-            ),
-            (
-                "At least one tracker chosen",
-                !ctx.config.output.enabled_roles().is_empty(),
-                "choose them under Trackers below",
-            ),
-            (
-                "A body being reconstructed",
-                ctx.fusion.is_running(),
-                "start it in the Tracking panel",
-            ),
-        ] {
-            let (mark, colour) = if met {
-                ("\u{2713}", GOOD)
-            } else {
-                ("\u{2717}", BAD)
-            };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(mark).color(colour));
-                ui.label(needed);
-                if !met {
-                    ui.label(RichText::new(format!("\u{2014} {where_to_go}")).weak());
-                }
-            });
-        }
+        super::checklist(
+            ui,
+            &[
+                (
+                    "Output enabled",
+                    ctx.config.output.enabled,
+                    "turn it on under Settings below",
+                ),
+                (
+                    "At least one tracker chosen",
+                    !ctx.config.output.enabled_roles().is_empty(),
+                    "choose them under Trackers below",
+                ),
+                (
+                    "A body being reconstructed",
+                    ctx.fusion.is_running(),
+                    "start it in the Tracking panel",
+                ),
+            ],
+        );
     }
 
     /// The tracker list: what is on, what index it goes out as, how it is doing.

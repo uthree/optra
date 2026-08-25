@@ -58,14 +58,19 @@ impl Lens {
     }
 
     /// The free parameters, for the calibration solver.
-    pub fn parameters(&self) -> [f64; 4] {
+    ///
+    /// Crate-visible: the slots mean different things in the two lens models
+    /// and nothing in the array says which, so it is only safe in the hands of
+    /// the code that took it apart. Outside the solver a lens is read through
+    /// its named fields.
+    pub(crate) fn parameters(&self) -> [f64; 4] {
         match self {
             Lens::RadialTangential { k1, k2, p1, p2 } => [*k1, *k2, *p1, *p2],
             Lens::Fisheye { k1, k2, k3, k4 } => [*k1, *k2, *k3, *k4],
         }
     }
 
-    pub fn with_parameters(&self, values: [f64; 4]) -> Self {
+    pub(crate) fn with_parameters(&self, values: [f64; 4]) -> Self {
         match self {
             Lens::RadialTangential { .. } => Lens::RadialTangential {
                 k1: values[0],

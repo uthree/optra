@@ -1,5 +1,6 @@
 //! Sending the reconstructed body to whatever is going to wear it.
 
+pub mod osc;
 pub mod pose;
 pub mod sink;
 pub mod stage;

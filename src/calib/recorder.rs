@@ -72,8 +72,6 @@ pub struct RecorderConfig {
     /// plane, but the wrist keypoint sits less rigidly against a controller
     /// than the head does against a headset.
     pub use_controllers: bool,
-    /// Weight given to controller sightings relative to the headset.
-    pub controller_weight: f32,
     /// Stop accepting samples for a camera once it has this many. A longer walk
     /// past this point adds cost without adding information.
     pub max_per_camera: usize,
@@ -88,7 +86,6 @@ impl Default for RecorderConfig {
             min_confidence: 0.5,
             min_pixel_step: 6.0,
             use_controllers: true,
-            controller_weight: 0.5,
             max_per_camera: 4000,
             poll_hz: 90.0,
         }

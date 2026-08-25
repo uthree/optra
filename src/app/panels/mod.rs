@@ -80,6 +80,30 @@ impl Panel {
     }
 }
 
+/// The prerequisites a stage needs before it can run, ticked or crossed.
+///
+/// Each entry is what is needed, whether it is there, and where to go if it is
+/// not. That last part is the reason this is a shared widget rather than a
+/// pair of loops: a cross with no instruction leaves a user staring at a panel
+/// that will not start, and the two panels that show one of these had drifted
+/// into two copies of the same loop already.
+pub fn checklist(ui: &mut egui::Ui, items: &[(&str, bool, &str)]) {
+    for (needed, met, where_to_go) in items {
+        let (mark, colour) = if *met {
+            ("\u{2713}", GOOD)
+        } else {
+            ("\u{2717}", BAD)
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(mark).color(colour));
+            ui.label(*needed);
+            if !met {
+                ui.label(egui::RichText::new(format!("\u{2014} {where_to_go}")).weak());
+            }
+        });
+    }
+}
+
 /// Everything a panel is allowed to touch.
 pub struct PanelContext<'a> {
     pub config: &'a mut crate::config::Config,

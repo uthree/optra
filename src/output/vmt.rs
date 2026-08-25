@@ -18,12 +18,11 @@
 //! and send it, which is one fewer thing to have configured correctly
 //! elsewhere.
 
-use std::net::{ToSocketAddrs, UdpSocket};
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use nalgebra::Isometry3;
-use rosc::{OscMessage, OscPacket, OscType, encoder};
+use rosc::OscType;
 
+use super::osc::OscSender;
 use super::pose::TrackerRole;
 use super::sink::{TrackerFrame, TrackerSink};
 
@@ -40,10 +39,8 @@ const ROOM_DRIVER: &str = "/VMT/Room/Driver";
 const SET_ROOM_MATRIX: &str = "/VMT/SetRoomMatrix/Temporary";
 
 pub struct Vmt {
-    socket: UdpSocket,
-    target: String,
+    osc: OscSender,
     indices: Vec<(u8, TrackerRole)>,
-    buffer: Vec<u8>,
 }
 
 impl Vmt {
@@ -59,21 +56,9 @@ impl Vmt {
         indices: Vec<(u8, TrackerRole)>,
         standing_to_raw: Option<Isometry3<f64>>,
     ) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0").context("could not open a UDP socket")?;
-        let resolved = target
-            .to_socket_addrs()
-            .with_context(|| format!("{target} is not an address"))?
-            .next()
-            .with_context(|| format!("{target} resolved to nothing"))?;
-        socket
-            .connect(resolved)
-            .with_context(|| format!("could not point a socket at {target}"))?;
-
         let mut sink = Self {
-            socket,
-            target: target.to_owned(),
+            osc: OscSender::open(target)?,
             indices,
-            buffer: Vec::with_capacity(192),
         };
 
         if let Some(room) = standing_to_raw {
@@ -97,22 +82,7 @@ impl Vmt {
             args.push(OscType::Float(translation[row] as f32));
         }
 
-        self.emit(SET_ROOM_MATRIX, args)
-    }
-
-    fn emit(&mut self, address: &str, args: Vec<OscType>) -> Result<()> {
-        let packet = OscPacket::Message(OscMessage {
-            addr: address.to_owned(),
-            args,
-        });
-
-        self.buffer.clear();
-        // Encoding into a `Vec` cannot fail; the error type is `Infallible`.
-        encoder::encode_into(&packet, &mut self.buffer).ok();
-        self.socket
-            .send(&self.buffer)
-            .with_context(|| format!("could not send {address}"))?;
-        Ok(())
+        self.osc.send(SET_ROOM_MATRIX, args)
     }
 
     /// One device, at an offset from now.
@@ -125,7 +95,7 @@ impl Vmt {
         let position = pose.translation.vector;
         let rotation = pose.rotation;
 
-        self.emit(
+        self.osc.send(
             ROOM_DRIVER,
             vec![
                 OscType::Int(index as i32),
@@ -152,7 +122,7 @@ impl TrackerSink for Vmt {
     }
 
     fn target(&self) -> String {
-        self.target.clone()
+        self.osc.target().to_owned()
     }
 
     fn send(&mut self, frame: &TrackerFrame) -> Result<()> {
@@ -188,9 +158,11 @@ impl TrackerSink for Vmt {
 
 #[cfg(test)]
 mod tests {
+    use std::net::UdpSocket;
     use std::time::Instant;
 
     use nalgebra::{Translation3, UnitQuaternion, Vector3};
+    use rosc::OscMessage;
 
     use super::super::pose::TrackerPose;
     use super::super::sink::assign;
@@ -203,6 +175,33 @@ mod tests {
             None,
         )
         .expect("a loopback socket")
+    }
+
+    /// A sink pointed at a socket this test owns, so what went on the wire can
+    /// be read back rather than taken on trust.
+    ///
+    /// It reads from the wire and not from the sender's own buffer, which is
+    /// where these tests used to look. Reaching into the encoder proves the
+    /// message was built; only the socket proves it was sent.
+    fn listening() -> (UdpSocket, Vmt) {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("a loopback port");
+        let address = socket.local_addr().expect("its own address").to_string();
+        let sink = Vmt::open(
+            &address,
+            assign(&[TrackerRole::Hip, TrackerRole::LeftFoot]),
+            None,
+        )
+        .expect("a loopback socket");
+        (socket, sink)
+    }
+
+    fn received(socket: &UdpSocket) -> OscMessage {
+        let mut bytes = [0u8; 1024];
+        let (length, _) = socket.recv_from(&mut bytes).expect("a packet");
+        match rosc::decoder::decode_udp(&bytes[..length]) {
+            Ok((_, rosc::OscPacket::Message(message))) => message,
+            other => panic!("expected one message, got {other:?}"),
+        }
     }
 
     fn frame(trackers: Vec<TrackerPose>, lost: Vec<TrackerRole>) -> TrackerFrame {
@@ -254,17 +253,12 @@ mod tests {
         );
 
         let expected = room.rotation.to_rotation_matrix();
-        let mut sink = sink();
+        let (socket, mut sink) = listening();
         sink.set_room_matrix(&room).expect("a loopback socket");
 
         // Decode what actually went on the wire rather than trusting the
         // builder: the layout is the whole point of the test.
-        let packet = rosc::decoder::decode_udp(&sink.buffer)
-            .expect("we just encoded this")
-            .1;
-        let OscPacket::Message(message) = packet else {
-            panic!("a bundle came out of a message");
-        };
+        let message = received(&socket);
 
         assert_eq!(message.addr, SET_ROOM_MATRIX);
         assert_eq!(message.args.len(), 12);
@@ -297,16 +291,11 @@ mod tests {
     /// untouched. This is the sink where a conversion would be the bug.
     #[test]
     fn a_pose_goes_out_unconverted() {
-        let mut sink = sink();
+        let (socket, mut sink) = listening();
         sink.send(&frame(vec![tracker(TrackerRole::Hip)], Vec::new()))
             .expect("a loopback socket");
 
-        let OscPacket::Message(message) = rosc::decoder::decode_udp(&sink.buffer)
-            .expect("we just encoded this")
-            .1
-        else {
-            panic!("a bundle came out of a message");
-        };
+        let message = received(&socket);
 
         assert_eq!(message.addr, ROOM_DRIVER);
         assert_eq!(message.args[0], OscType::Int(1));

@@ -116,36 +116,26 @@ impl TrackingPanel {
             ui.add_space(6.0);
         }
 
-        for (needed, met, where_to_go) in [
-            (
-                "Fusion enabled",
-                ctx.config.fusion.enabled,
-                "turn it on under Settings below",
-            ),
-            (
-                "Cameras running with a model",
-                ctx.pipeline.is_running(),
-                "start them in the Cameras panel",
-            ),
-            (
-                "A calibrated room",
-                ctx.room.is_some(),
-                "run the wizard in the Calibration panel",
-            ),
-        ] {
-            let (mark, colour) = if met {
-                ("\u{2713}", GOOD)
-            } else {
-                ("\u{2717}", BAD)
-            };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(mark).color(colour));
-                ui.label(needed);
-                if !met {
-                    ui.label(RichText::new(format!("\u{2014} {where_to_go}")).weak());
-                }
-            });
-        }
+        super::checklist(
+            ui,
+            &[
+                (
+                    "Fusion enabled",
+                    ctx.config.fusion.enabled,
+                    "turn it on under Settings below",
+                ),
+                (
+                    "Cameras running with a model",
+                    ctx.pipeline.is_running(),
+                    "start them in the Cameras panel",
+                ),
+                (
+                    "A calibrated room",
+                    ctx.room.is_some(),
+                    "run the wizard in the Calibration panel",
+                ),
+            ],
+        );
 
         ui.add_space(10.0);
         let mut enabled = ctx.config.fusion.enabled;

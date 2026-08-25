@@ -11,12 +11,10 @@
 //! where they sit on the body during its own in-game calibration, so the
 //! indices only have to stay still between calibrations.
 
-use std::net::{ToSocketAddrs, UdpSocket};
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use nalgebra::{Isometry3, UnitQuaternion, Vector3};
-use rosc::{OscMessage, OscPacket, OscType, encoder};
 
+use super::osc::OscSender;
 use super::pose::TrackerRole;
 use super::sink::{TrackerFrame, TrackerSink};
 
@@ -24,62 +22,26 @@ use super::sink::{TrackerFrame, TrackerSink};
 pub const DEFAULT_TARGET: &str = "127.0.0.1:9000";
 
 pub struct VrchatOsc {
-    socket: UdpSocket,
-    target: String,
+    osc: OscSender,
     /// Roles in index order, so a send does not have to sort anything.
     indices: Vec<(u8, TrackerRole)>,
-    /// Reused between sends. Encoding into it rather than allocating a fresh
-    /// vector per message keeps ninety sends a second off the allocator.
-    buffer: Vec<u8>,
 }
 
 impl VrchatOsc {
     pub fn open(target: &str, indices: Vec<(u8, TrackerRole)>) -> Result<Self> {
-        // Bound to an ephemeral port on the loopback-capable wildcard: nothing
-        // is ever received on it, and picking a fixed port would collide with
-        // whatever else on the machine is speaking OSC.
-        let socket = UdpSocket::bind("0.0.0.0:0").context("could not open a UDP socket")?;
-
-        let resolved = target
-            .to_socket_addrs()
-            .with_context(|| format!("{target} is not an address"))?
-            .next()
-            .with_context(|| format!("{target} resolved to nothing"))?;
-        socket
-            .connect(resolved)
-            .with_context(|| format!("could not point a socket at {target}"))?;
-
         Ok(Self {
-            socket,
-            target: target.to_owned(),
+            osc: OscSender::open(target)?,
             indices,
-            buffer: Vec::with_capacity(128),
         })
     }
 
     fn send_pose(&mut self, address: &str, pose: &Isometry3<f64>) -> Result<()> {
-        let position = unity_position(pose);
-        self.send_triple(&format!("{address}/position"), position)?;
+        self.send_triple(&format!("{address}/position"), unity_position(pose))?;
         self.send_triple(&format!("{address}/rotation"), unity_euler(&pose.rotation))
     }
 
     fn send_triple(&mut self, address: &str, value: Vector3<f64>) -> Result<()> {
-        let packet = OscPacket::Message(OscMessage {
-            addr: address.to_owned(),
-            args: vec![
-                OscType::Float(value.x as f32),
-                OscType::Float(value.y as f32),
-                OscType::Float(value.z as f32),
-            ],
-        });
-
-        self.buffer.clear();
-        // Encoding into a `Vec` cannot fail; the error type is `Infallible`.
-        encoder::encode_into(&packet, &mut self.buffer).ok();
-        self.socket
-            .send(&self.buffer)
-            .with_context(|| format!("could not send {address}"))?;
-        Ok(())
+        self.osc.send_triple(address, value.x, value.y, value.z)
     }
 }
 
@@ -89,7 +51,7 @@ impl TrackerSink for VrchatOsc {
     }
 
     fn target(&self) -> String {
-        self.target.clone()
+        self.osc.target().to_owned()
     }
 
     fn send(&mut self, frame: &TrackerFrame) -> Result<()> {

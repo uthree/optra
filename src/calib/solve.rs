@@ -506,14 +506,26 @@ fn seed_fov(kind: LensKind) -> f64 {
     }
 }
 
-/// How much a sighting is trusted, before the solver's own outlier handling.
+/// How much a controller sighting counts against a headset one.
 ///
 /// A controller is held rather than worn: the wrist keypoint sits against it
 /// less rigidly than the head sits against a headset, and a change of grip
 /// moves the offset by a centimetre or two. They earn their place by reaching
 /// heights the head never does, but they should not outvote it.
+///
+/// It is a constant here rather than a setting on the recorder, where it used
+/// to be declared and never read. A number a user can change and that nothing
+/// consults is worse than one they cannot: the second is a decision and the
+/// first is a lie.
+const CONTROLLER_RIGIDITY: f64 = 0.5;
+
+/// How much a sighting is trusted, before the solver's own outlier handling.
 fn weight_of(rig: Rig, confidence: f64) -> f64 {
-    let rigidity = if rig.role == Role::Head { 1.0 } else { 0.5 };
+    let rigidity = if rig.role == Role::Head {
+        1.0
+    } else {
+        CONTROLLER_RIGIDITY
+    };
     confidence.clamp(0.0, 1.0) * rigidity
 }
 
