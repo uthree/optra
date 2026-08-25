@@ -13,6 +13,25 @@
 //! ground truth the harness compares them against then come from one piece of
 //! code, including the lens distortion. A renderer with its own idea of the
 //! lens would let a distortion bug cancel itself out.
+//!
+//! One approximation follows from that and is worth naming, because it is
+//! wrong in principle. Only the three corners of a triangle go through the
+//! lens; the edges between them are drawn straight. A straight line in the
+//! world is straight in a pinhole image and *curved* in a distorted one, so a
+//! rasterised edge is off by however far the real one bends.
+//!
+//! Measured on the four cameras this harness uses, as the distance from the
+//! projected midpoint of an edge to the straight line joining its projected
+//! ends — exactly zero for a pinhole, so what is left is the distortion:
+//!
+//! - a limb segment, twelve centimetres: at most 0.014 px
+//! - a floor tile edge, half a metre: at most 0.14 px
+//! - a wall panel, two and a half metres: at most 1.23 px
+//!
+//! The body is built from the first of those, so the thing being measured is
+//! unaffected at four decimal places. Subdividing the room would fix the third
+//! and cost frame time to make a wall a pixel straighter, which is not a trade
+//! worth taking; it is written down instead.
 
 use std::path::Path;
 

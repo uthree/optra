@@ -164,6 +164,27 @@ A room whose cameras are 0, 20, 40 and 90 ms late now comes out to 5 mm.
 Ignoring the delays puts a camera nine metres away, which is the calibration
 every real installation would have had. See [design.md](design.md) section 8.3.
 
+That test picked delays that happened to work, and sweeping past them found two
+more failures — which is the lesson as much as the fixes are.
+
+- **A camera much more than sixty milliseconds late did not solve at all**, and
+  ended the whole calibration on a message about correspondences, *before* the
+  latency estimator ran. Three of the four test cameras failed at eighty
+  milliseconds and all four at a hundred and ten, which is inside the range this
+  same code calls plausible for a webcam. The resection turns out to be a sharp
+  detector of its own delay, so the seed searches for one that solves. Forty to
+  a hundred and twenty milliseconds now comes out within half a millimetre, and
+  four cameras all seventy milliseconds late — a room furnished with one model
+  of webcam — within nine.
+- **A camera solved to nonsense did not look like one.** The outlier rejection
+  throws away everything that disagreed with wherever the camera ended up, so
+  what comes back is a few sightings with a small error over them and an `Ok`.
+  One kept 5 of 175 sightings at 36° and stood two and a half metres from where
+  it hangs. The solve now refuses that, and refuses a room fitted at a delay
+  other than the one measured on it — which is the only way to see a timing
+  error, since it moves every sighting the same way and leaves the reprojection
+  perfectly happy about a camera in the wrong place.
+
 What is left is a walk through a real room with the cameras where they will
 live. Everything the milestone calls for is written and green against synthetic
 rooms and against a Quest 3.
@@ -323,13 +344,13 @@ ceiling cameras and `tests/accuracy.rs` runs the real detector and the real pose
 model over those frames, then the real triangulation, fit and filter. The figure
 is forward kinematics from stated bone lengths, so the answer is known exactly.
 
-First numbers, over a seven second walk: a person found in all 560 camera
-frames, the lower body 2.9 cm from the truth with 1.8 cm of spread once the
-model's own labelling offset is taken out, against 0.5 cm from perfectly
-projected keypoints. The gap between those is what inference contributes, and
-it had never been possible to look at.
+Numbers over a fourteen second walk: a person found in all 1120 camera frames,
+the lower body 2.8 cm from the truth with 1.9 cm of spread once the model's own
+labelling offset is taken out, against 0.5 cm from perfectly projected
+keypoints. The gap between those is what inference contributes, and it had
+never been possible to look at.
 
-Four things came out of building it:
+Six things came out of building it and then reviewing it adversarially:
 
 - **A pose model's joints are where its training set was annotated, not where
   the bone is.** Halpe's hip-to-neck measures six centimetres longer than the
@@ -338,9 +359,19 @@ Four things came out of building it:
   output stage are what absorb it — but a report that added it into one error
   figure would have made a well-behaved model look four times worse than it is.
   The harness reports the constant part and the scatter separately.
-- **The hips come back mirrored on about seven per cent of ticks.** A foot
-  tracker on the wrong foot is a specific failure with a name, and a mean would
-  have buried it in a tail.
+- **The hips come back mirrored on 9% of ticks.** A foot tracker on the wrong
+  foot is a specific failure with a name, and a mean would have buried it in a
+  tail. The hips are the worst of it and matter more than they look: the pelvis
+  yaw is taken from the vector between them, so a pair that trades places turns
+  the tracker round. Ankles, heels and toes swap on under one per cent.
+- **The harness was measuring a value the product never sends.** It scored the
+  smoother, and what reaches a tracker is the filter's extrapolation one horizon
+  further on. Scoring the right thing, against a sweep of instants rather than
+  one, says the geometry is accurate to half a centimetre and the filter loses
+  most of it: what goes out is 4.6 cm from the truth and 80 ms behind the moment
+  it claims to describe. The cause is isolated to the velocity credibility gate,
+  and it is not tuned yet because the two synthetic walks disagree about the
+  fix — see section 14.5 of [design.md](design.md).
 - **Rendering has to be deterministic to be worth asserting on.** The renderer
   is a software rasteriser rather than the GPU already in the process, because a
   threshold tight enough to be useful would otherwise fail on somebody else's
@@ -350,6 +381,12 @@ Four things came out of building it:
   hung off the floor rather than off the ankle, so it stretched every time the
   ankle lifted, and the two feet were drawn to different lengths. Every foot
   number would have been measured against that.
+- **A test that passes is not the same as a feature that works.** The
+  calibration test picked camera delays that happened to sit inside a narrow
+  working range. Sweeping past it found that three of the four cameras failed to
+  solve at all at eighty milliseconds — inside the range the code itself calls
+  plausible for a webcam — and that two more delays produced a room metres out
+  and returned it as `Ok`. Both are fixed; M3 has the detail.
 
 What it cannot do is predict a real room. The figure is a rendered
 approximation and real skin, fabric, motion blur and lighting are all absent.

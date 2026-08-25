@@ -713,6 +713,54 @@ delays puts a camera nine metres away — which is not a degraded calibration bu
 a different room, and it is the calibration every real installation would have
 had.
 
+**Seeding a camera that is too late to resect.** That test picked its delays
+inside a range that happened to work, and sweeping past it found the range was
+narrow. A camera much more than sixty milliseconds late does not resect at all:
+its pixels, paired with poses from sixty milliseconds after the shutter, agree
+with no camera, and the search ends with no consensus rather than with a bad
+answer. Three of the four cameras in the test room failed at eighty
+milliseconds and all four at a hundred and ten — inside the range this same
+code calls plausible for a webcam — and the failure ended the whole calibration
+*before* the estimator ran, on a message about correspondences.
+
+The chicken and egg has an easy way out, because the resection is a sharp
+detector of its own delay: it fails outright at zero, twenty, forty and sixty
+and comes back clean at eighty with three tenths of a degree on it. So the seed
+searches a twenty-millisecond grid when the delay it was handed does not solve,
+keeps the candidate with the most inliers, and carries that lag back out — the
+sightings have to be paired at it too, or the pairing undoes the only thing that
+worked. Every camera from forty to a hundred and twenty milliseconds now solves
+within half a millimetre, and four cameras all seventy milliseconds late, which
+is what a room furnished with one model of webcam looks like, come out within
+nine.
+
+**Refusing a room that did not solve.** The same sweep found the other half:
+a camera can be solved to nonsense and not look like it. The refinement's
+outlier rejection throws away everything that disagreed with wherever the
+camera ended up, so what comes back is a handful of sightings with a small error
+over them — an `Ok`, a saved profile, and feet a metre out. One camera kept 5
+of its 175 sightings, came out 36° from them, and stood two and a half metres
+from where it hangs; another kept 2 of 189 at 81°.
+
+Two gates, at the end of the solve. The first is that arithmetic: a camera
+keeping under a quarter of its sightings, or landing more than three degrees
+from the ones it kept, did not solve. The populations are four orders of
+magnitude apart, so the thresholds are loose.
+
+The second is subtler and is the one the delay handling always needed. A timing
+error moves every sighting the same way, so the fit stays perfectly
+self-consistent about a camera in the wrong place, and no reprojection residual
+can see it — ten milliseconds of it was half a metre. What does see it is the
+delay the room was *fitted* at against the delay measured on it. Those agree
+exactly when the alternation converges, and disagree only when something
+declined to close the loop: an estimate too long to apply, a loop out of rounds,
+a seed that had to guess. The gap is then the size of the error left behind.
+
+Plausibility was tried for this first and is the wrong test. A delay of exactly
+a hundred and twenty milliseconds is not plausible by that definition and solves
+to a tenth of a millimetre. What matters is not whether the number is large but
+whether the room was fitted at it.
+
 A delay is invisible against a stationary head, so each estimate carries how
 much worse the fit gets a probe distance either side of the answer,
 **measured in pixels** rather than as a fraction of the best fit. The relative
@@ -1651,7 +1699,7 @@ not merely become inaccurate there, it stops being invertible.
 
 ### 14.4 What the report separates
 
-A single error figure would run four different things together, so the harness
+A single error figure would run five different things together, so the harness
 reports them apart.
 
 - **Pixels.** How far each camera's keypoint is from where that joint really
@@ -1669,33 +1717,93 @@ reports them apart.
 - **Swaps.** Ticks where a joint came back nearer to its mirror image than to
   itself. A foot tracker on the wrong foot is not a slightly worse foot tracker,
   and averaging that into a tail would hide it.
+- **Lag.** How far behind the body each stage runs, found by scoring it against
+  the truth at a range of instants and keeping the one it matches best. A stage
+  a centimetre out and a stage exactly right but twenty milliseconds late score
+  identically against a single instant, and they are different faults with
+  different fixes.
 
 Bone lengths are reported alongside, against the lengths that were drawn,
 because a body reconstructed to the wrong size is the one error a set of cameras
 cannot detect about itself — see section 9.7.
 
-### 14.5 What it says so far
+Two things about *what* is scored took a second pass to get right, and both
+were flattering the result.
 
-Over a seven-second walk in front of four cameras, with YOLOX-tiny and
+The skeleton used to be measured over the whole walk and the same frames then
+fitted against it. A bone length is a median over thousands of samples and one
+pose barely moves it, so the leak was small — but small is a claim, and this
+file exists to avoid making claims like that. The walk is split instead: bones
+from the first half, fit and filter scored on the second. That needs a longer
+walk, since three and a half seconds settles 82% of the skeleton where seven
+settles all of it, and a fit held to a skeleton with holes in it is scoring the
+measurement again by another route.
+
+More seriously, the chain was scored at the smoother. `Posture::predicted` is
+what reaches a tracker and the smoothed pose behind it never leaves the process,
+so the last line of the table was reporting a number no user receives — better
+than the one they do by a factor of two. The extrapolation is now scored
+against where the body will be when it arrives, which is the claim that
+extrapolation makes.
+
+### 14.5 What the timing table says about the filter
+
+Scoring the shipped value, and scoring it against a sweep of instants rather
+than one, immediately said something the previous table could not:
+
+| stage | lag | error at its lag | error at no lag |
+|---|---|---|---|
+| fused | 0 ms | 0.45 cm | 0.45 cm |
+| fitted | 0 ms | 0.36 cm | 0.36 cm |
+| smoothed | 30 ms | 1.08 cm | 2.70 cm |
+| predicted | 80 ms | 1.98 cm | 4.55 cm |
+
+The geometry is accurate to half a centimetre and the filter loses most of it.
+Worse, the prediction moves its own timestamp a horizon forward while moving
+the body it describes about a tenth as far, so what goes out is 80 ms behind
+what it claims to be — which is the opposite of what section 9.4 says the
+prediction is for.
+
+The cause is isolated. The velocity credibility gate of section 9.5 multiplies
+the extrapolation by a factor averaging 0.12 on this walk, because an agility
+of 5 m/s² at 20 Hz leaves a velocity noise floor of 0.65 m/s and a hip does not
+walk that fast.
+
+It is not tuned here, because the two synthetic walks disagree about the fix.
+Lowering the agility takes this walk from 4.6 cm to 2.5 cm and the one in
+`tests/fusion.rs`, whose legs move at a couple of metres per second, from 6.6 cm
+to 9.2 cm. That is a genuine trade between two bodies rather than a bug, and
+choosing a side is a decision. What has changed is that it is now a decision
+somebody can make with numbers in front of them — and that several of the
+choices recorded in 9.5 were made against the metric this section just replaced.
+
+### 14.6 What it says so far
+
+Over a fourteen-second walk in front of four cameras, with YOLOX-tiny and
 RTMPose-m-Halpe26:
 
 | | median | p95 |
 |---|---|---|
-| Lower body, from the truth | 2.9 cm | 7.0 cm |
-| Lower body, spread alone | 1.8 cm | 6.7 cm |
+| Lower body, from the truth | 2.8 cm | 7.4 cm |
+| Lower body, spread alone | 1.9 cm | 7.6 cm |
 | The same from perfect keypoints | 0.5 cm | 0.9 cm |
+| What the output stage would send | 5.9 cm | 13.5 cm |
 
-A person was found in all 560 camera frames. The gap between the last row and
+A person was found in all 1120 camera frames. The gap between the third row and
 the first two *is* the contribution of inference, which is the thing that could
-not previously be looked at.
+not previously be looked at; the gap between the first row and the fourth is the
+filter, and section 14.5 is about that.
 
-Two findings came straight off the table. The hips come back mirrored on about
-seven per cent of ticks — a specific, nameable failure that a mean would have
-buried in a tail. And `hip`-to-`neck` measures six centimetres longer than it was
-drawn, with almost no scatter, which is the labelling convention rather than an
-error: the model's neck is not where this document's neck is.
+Three findings came straight off the table. The left hip comes back mirrored on
+9% of ticks and the right on 5% — a specific, nameable failure that a mean would
+have buried in a tail, and one that turns the hip tracker round, since
+`Posture` takes the pelvis yaw from the vector between them. The ankles, heels
+and toes swap on under 1% and are held to a tighter threshold for that reason.
+And `hip`-to-`neck` measures six centimetres longer than it was drawn, with
+almost no scatter, which is the labelling convention rather than an error: the
+model's neck is not where this document's neck is.
 
-### 14.6 What it does not answer
+### 14.7 What it does not answer
 
 The figure is a rendered approximation of a person, not a person. Real skin,
 real fabric, real motion blur, real lighting and real backgrounds are all
