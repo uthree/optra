@@ -9,10 +9,17 @@
 
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 
+use std::time::{Duration, Instant};
+
+use optra::calib::recorder::{CameraTrail, Recording, Rig, Sample};
+use optra::calib::{RoomCalibration, SolveOptions, solve};
+use optra::config::{CameraConfig, LensKind};
 use optra::geometry::camera::{Camera, Intrinsics};
 use optra::geometry::lens::Lens;
 use optra::geometry::refine::{RefineOptions, Sighting, offset_observability, refine};
 use optra::geometry::resection::{Correspondence, ResectionOptions, resect};
+use optra::models::keypoints::Joint;
+use optra::vr::{Role, Track};
 
 /// Where the head keypoint sits relative to the headset origin, in the
 /// headset's own frame: up a little, back a little.
@@ -315,44 +322,45 @@ fn a_messy_walk_still_calibrates() {
     );
 }
 
-/// The recorder-to-solver path, on a walk built from the same room as above.
+/// The rigs a walk is recorded against, and each one's offset from the device
+/// it hangs off.
+fn rigs() -> (Vec<Rig>, Vec<Vector3<f64>>) {
+    (
+        vec![
+            Rig {
+                role: Role::Head,
+                joint: Joint::Head,
+            },
+            Rig {
+                role: Role::LeftHand,
+                joint: Joint::LeftWrist,
+            },
+            Rig {
+                role: Role::RightHand,
+                joint: Joint::RightWrist,
+            },
+        ],
+        vec![
+            HEAD_OFFSET,
+            Vector3::new(-0.02, 0.03, 0.09),
+            Vector3::new(0.02, 0.03, 0.09),
+        ],
+    )
+}
+
+/// Records the walk as `cameras` would have seen it, with camera `index`
+/// stamping each of its frames `delays[index]` later than it really exposed
+/// them.
 ///
-/// The maths is already covered; what this exercises is the glue — rig
-/// indexing, pairing each pixel with the pose at its own timestamp, and the
-/// per-camera reporting that comes back out.
-#[test]
-fn a_recording_solves_into_a_room() {
-    use std::time::{Duration, Instant};
-
-    use optra::calib::recorder::{CameraTrail, Recording, Rig, Sample};
-    use optra::calib::{SolveOptions, solve};
-    use optra::config::{CameraConfig, LensKind};
-    use optra::models::keypoints::Joint;
-    use optra::vr::{Role, Track};
-
-    let truth = room();
+/// That is what a camera latency is: not a frame that arrives late, which
+/// costs nothing, but a frame whose *timestamp* is later than the instant it
+/// shows. The solver pairs each pixel with where the headset was at the
+/// stamped time, so an uncorrected delay pairs every pixel with a pose from
+/// after the shutter, and the room is solved against a walk that never
+/// happened that way.
+fn recorded_walk(cameras: &[Camera], delays: &[Duration]) -> Recording {
     let start = Instant::now();
-
-    // Three rigs, each with its own offset from the device it hangs off.
-    let rigs = vec![
-        Rig {
-            role: Role::Head,
-            joint: Joint::Head,
-        },
-        Rig {
-            role: Role::LeftHand,
-            joint: Joint::LeftWrist,
-        },
-        Rig {
-            role: Role::RightHand,
-            joint: Joint::RightWrist,
-        },
-    ];
-    let offsets = [
-        HEAD_OFFSET,
-        Vector3::new(-0.02, 0.03, 0.09),
-        Vector3::new(0.02, 0.03, 0.09),
-    ];
+    let (rigs, offsets) = rigs();
 
     // Where each device was, sampled far more often than the cameras run.
     let mut tracks = vec![Track::default(); rigs.len()];
@@ -385,7 +393,8 @@ fn a_recording_solves_into_a_room() {
     // What each camera saw. Frames land between pose samples, which is the
     // normal case and the reason the recorder interpolates at all.
     let mut trails = Vec::new();
-    for (index, camera) in truth.iter().enumerate() {
+    for (index, camera) in cameras.iter().enumerate() {
+        let delay = delays.get(index).copied().unwrap_or(Duration::ZERO);
         let mut trail = CameraTrail::new(format!("cam{index}"));
         trail.width = camera.intrinsics.width;
         trail.height = camera.intrinsics.height;
@@ -397,8 +406,8 @@ fn a_recording_solves_into_a_room() {
                 if step % 3 != 0 || step + 1 >= samples.len() {
                     continue;
                 }
-                let frame_at = *at + Duration::from_millis(3);
-                let Some(anchor) = tracks[rig].at(frame_at) else {
+                let exposed_at = *at + Duration::from_millis(3);
+                let Some(anchor) = tracks[rig].at(exposed_at) else {
                     continue;
                 };
 
@@ -411,7 +420,9 @@ fn a_recording_solves_into_a_room() {
                 }
 
                 trail.record(Sample {
-                    at: frame_at,
+                    // The pixel is what the camera saw when it exposed; the
+                    // stamp is when it got round to saying so.
+                    at: exposed_at + delay,
                     rig,
                     pixel,
                     confidence: 0.9,
@@ -422,12 +433,48 @@ fn a_recording_solves_into_a_room() {
         trails.push(trail);
     }
 
-    let recording = Recording {
-        rigs: rigs.clone(),
+    Recording {
+        rigs,
         tracks,
         cameras: trails,
         duration: Duration::from_secs(20),
-    };
+    }
+}
+
+fn configs(count: usize) -> Vec<CameraConfig> {
+    (0..count)
+        .map(|index| CameraConfig {
+            id: format!("cam{index}"),
+            lens: if index == 2 {
+                LensKind::Wide
+            } else {
+                LensKind::Standard
+            },
+            ..CameraConfig::default()
+        })
+        .collect()
+}
+
+/// Worst distance between a solved camera and where it really is, in metres.
+fn worst_camera_error(solved: &RoomCalibration, truth: &[Camera]) -> f64 {
+    solved
+        .cameras
+        .iter()
+        .zip(truth)
+        .map(|(calibrated, camera)| (calibrated.camera.position() - camera.position()).norm())
+        .fold(0.0, f64::max)
+}
+
+/// The recorder-to-solver path, on a walk built from the same room as above.
+///
+/// The maths is already covered; what this exercises is the glue — rig
+/// indexing, pairing each pixel with the pose at its own timestamp, and the
+/// per-camera reporting that comes back out.
+#[test]
+fn a_recording_solves_into_a_room() {
+    let truth = room();
+    let recording = recorded_walk(&truth, &[]);
+    let (rigs, offsets) = rigs();
 
     assert!(
         recording.samples() > 500,
@@ -448,19 +495,7 @@ fn a_recording_solves_into_a_room() {
         );
     }
 
-    let configs: Vec<CameraConfig> = (0..truth.len())
-        .map(|index| CameraConfig {
-            id: format!("cam{index}"),
-            lens: if index == 2 {
-                LensKind::Wide
-            } else {
-                LensKind::Standard
-            },
-            ..CameraConfig::default()
-        })
-        .collect();
-
-    let solved = solve(&recording, &configs, &SolveOptions::default())
+    let solved = solve(&recording, &configs(truth.len()), &SolveOptions::default())
         .expect("a clean recording should solve");
 
     println!(
@@ -508,4 +543,91 @@ fn a_recording_solves_into_a_room() {
             offsets[index]
         );
     }
+}
+
+/// Cameras hand their frames over late, by different amounts, and the solve
+/// measures that and then fits again against the corrected timestamps.
+///
+/// The second fit is glue rather than maths. The estimator has its own tests
+/// for the search and the parabola, and none of them can say whether the
+/// result is put back in the right camera's slot, whether the sightings are
+/// re-paired against it, or whether the refinement restarts from the seeds
+/// rather than from the answer it already had. Until now the only end-to-end
+/// recording carried no delay at all, so this whole branch never ran.
+#[test]
+fn a_recording_with_late_cameras_solves_once_the_delay_is_measured() {
+    let truth = room();
+    let delays = [
+        Duration::ZERO,
+        Duration::from_millis(40),
+        Duration::from_millis(90),
+        Duration::from_millis(20),
+    ];
+    let recording = recorded_walk(&truth, &delays);
+    let configs = configs(truth.len());
+
+    let solved = solve(&recording, &configs, &SolveOptions::default())
+        .expect("a late recording should still solve");
+
+    for (index, calibrated) in solved.cameras.iter().enumerate() {
+        let measured = calibrated
+            .latency
+            .unwrap_or_else(|| panic!("{} was given no latency at all", calibrated.id));
+        let expected = delays[index].as_secs_f64() * 1000.0;
+        println!(
+            "{} is {expected:.0} ms late, measured {:.1} ms",
+            calibrated.id,
+            measured.millis()
+        );
+        assert!(
+            (measured.millis() - expected).abs() < 8.0,
+            "{} is {expected:.0} ms late and was measured at {:.1} ms",
+            calibrated.id,
+            measured.millis()
+        );
+    }
+
+    for (index, calibrated) in solved.cameras.iter().enumerate() {
+        println!(
+            "  {} {:.1} mm, rms {:.4} deg, {} sightings, spread {:.3}",
+            calibrated.id,
+            (calibrated.camera.position() - truth[index].position()).norm() * 1000.0,
+            calibrated.rms_degrees(),
+            calibrated.sightings,
+            calibrated.spread
+        );
+    }
+    let corrected = worst_camera_error(&solved, &truth);
+    println!(
+        "worst camera {:.1} mm once the delays were corrected",
+        corrected * 1000.0
+    );
+    assert!(
+        corrected < 8e-3,
+        "worst camera is {corrected} m out even after the delays were measured"
+    );
+
+    // The number that says the second fit was worth doing. Solving the same
+    // recording while insisting the cameras are prompt pairs every pixel with
+    // a pose from tens of milliseconds after the shutter.
+    let ignored = solve(
+        &recording,
+        &configs,
+        &SolveOptions {
+            estimate_latency: false,
+            ..SolveOptions::default()
+        },
+    )
+    .expect("it still converges, to the wrong room");
+    let uncorrected = worst_camera_error(&ignored, &truth);
+
+    println!(
+        "worst camera {:.1} mm with the delays ignored",
+        uncorrected * 1000.0
+    );
+    assert!(
+        uncorrected > 4.0 * corrected,
+        "correcting the delays changed the answer by almost nothing: \
+         {uncorrected} m against {corrected} m"
+    );
 }

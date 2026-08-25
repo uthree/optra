@@ -682,9 +682,36 @@ bundle refinement minimizes, scanned over a time shift, so it reuses the
 geometry instead of introducing a separate notion of similarity.
 
 It therefore has to happen *after* the first refinement, since it needs cameras
-to reproject through. Once the delays are known the fit is run again against
+to reproject through. Once the delays are known the room is solved again against
 the corrected timestamps, which is what turns the measurement into accuracy
 rather than a number on a screen.
+
+**Solved again, and more than once.** Both halves of that were wrong at first,
+and neither could be seen until a recording carried a delay — every synthetic
+recording had been prompt, which is the one thing no real camera is.
+
+The first pass has no delays to work with, so it does the only thing it can and
+puts each camera wherever best explains a walk it believes happened forty
+milliseconds after it did. Part of every delay is therefore already hidden in
+the extrinsics by the time the search runs, and the search finds only what is
+left: a camera really ninety milliseconds late came back as fifty-two. Solving
+again exposes the rest, so the measurement and the fit alternate until a round
+changes nothing, which takes two.
+
+The second half is worse. Correcting only the *pairings* and refining from the
+original resection leaves the refinement starting from a seed seeded against a
+walk that camera had not caught up with — and a seed that far out is not one the
+refinement pulls back. Its outlier rejection throws away the sightings that
+disagree with the seed instead, so the camera ends up solved from a quarter of
+its own data. In the test that found this, a camera forty milliseconds late kept
+51 of its 190 sightings and came out 39 cm from where it was, while every other
+camera in the room was fine. Both the resection and the pairing are redone.
+
+With both fixed, a room whose four cameras are 0, 20, 40 and 90 ms late is
+recovered to 5 mm and every delay to within half a millisecond. Ignoring the
+delays puts a camera nine metres away — which is not a degraded calibration but
+a different room, and it is the calibration every real installation would have
+had.
 
 A delay is invisible against a stationary head, so each estimate carries how
 much worse the fit gets a probe distance either side of the answer,

@@ -183,6 +183,13 @@ impl RoomCalibration {
     }
 }
 
+/// How many times the latency is measured and the room solved again against it.
+///
+/// Three is one more than it takes to stop moving on any delay a webcam can
+/// have, which makes it a bound rather than a schedule: the loop leaves as soon
+/// as a round changes nothing.
+const LATENCY_ROUNDS: usize = 3;
+
 /// Solves every camera in the recording.
 pub fn solve(
     recording: &Recording,
@@ -197,8 +204,6 @@ pub fn solve(
         cameras.iter().map(|c| (c.id.as_str(), c)).collect();
 
     let mut ids = Vec::new();
-    let mut seeds = Vec::new();
-    let mut spreads = Vec::new();
     let mut coverages = Vec::new();
     let mut feet = Vec::new();
 
@@ -212,59 +217,26 @@ pub fn solve(
             continue;
         }
 
-        let Some(config) = configs.get(trail.camera.as_str()) else {
+        if !configs.contains_key(trail.camera.as_str()) {
             bail!(
                 "the recording names a camera that is not configured: {}",
                 trail.camera
             );
-        };
-
-        // Every rig contributes, not just the head. The head alone traces a
-        // narrow band of heights, and a set of points that close to a plane is
-        // degenerate for the linear solve; a hand raised and lowered is what
-        // gives the resection something to work with.
-        let correspondences: Vec<Correspondence> = trail
-            .samples
-            .iter()
-            .filter_map(|sample| {
-                let pose = recording.tracks[sample.rig].at(sample.at)?;
-                Some(Correspondence {
-                    world: Point3::from(pose.translation.vector),
-                    pixel: sample.pixel,
-                })
-            })
-            .collect();
-
-        let lens = Lens::for_kind(config.lens);
-        let guess = Intrinsics::from_fov(
-            trail.width,
-            trail.height,
-            seed_fov(config.lens).to_radians(),
-        );
-
-        let Some(resection) = resect(&guess, lens, &correspondences, &options.resection) else {
-            bail!(
-                "camera {} could not be solved from {} correspondences",
-                trail.camera,
-                correspondences.len()
-            );
-        };
+        }
 
         ids.push(trail.camera.clone());
-        spreads.push(resection.spread);
         coverages.push(trail.coverage.filled());
         feet.push(if trail.frames > 0 {
             trail.feet_seen as f32 / trail.frames as f32
         } else {
             0.0
         });
-        seeds.push(resection.camera);
     }
 
-    if seeds.len() < 2 {
+    if ids.len() < 2 {
         bail!(
             "only {} camera(s) saw enough of the walk; tracking needs at least two",
-            seeds.len()
+            ids.len()
         );
     }
 
@@ -277,6 +249,7 @@ pub fn solve(
     let offsets = vec![Vector3::zeros(); recording.rigs.len()];
     let mut lags = vec![Duration::ZERO; ids.len()];
 
+    let (mut seeds, mut spreads) = seed(recording, &configs, &ids, &lags, options)?;
     let mut sightings = pair(recording, &index, &lags);
     let mut refined = refine(&seeds, &offsets, &sightings, &options.refine);
 
@@ -285,50 +258,76 @@ pub fn solve(
     // it happens here rather than before the first fit — and once it is known,
     // fitting again against the corrected timestamps is what turns it from a
     // number into accuracy.
+    //
+    // It has to go round more than once. The first fit had no delays to work
+    // with, so it did the only thing it could and moved each camera to wherever
+    // best explained a walk it believed happened forty milliseconds after it
+    // did. Part of every delay is therefore already hidden in the extrinsics
+    // by the time the search runs, and the search finds only the part that is
+    // left: a camera really ninety milliseconds late measured as fifty-two on
+    // the first pass. Refitting puts the pose back where it belongs, which
+    // exposes the rest, and a second search finds it.
     let mut estimates = vec![None; ids.len()];
     if options.estimate_latency {
-        for (slot, id) in ids.iter().enumerate() {
-            let Some(trail) = recording.trail(id) else {
-                continue;
-            };
+        for round in 0..LATENCY_ROUNDS {
+            let before = lags.clone();
 
-            let estimate = latency::estimate(
-                &refined.cameras[slot],
-                trail,
-                recording,
-                &refined.offsets,
-                &options.latency,
-            );
+            for (slot, id) in ids.iter().enumerate() {
+                let Some(trail) = recording.trail(id) else {
+                    continue;
+                };
 
-            match estimate {
-                // A walk too slow to leave a mark produces a confident-looking
-                // minimum in noise. Applying that is worse than applying
-                // nothing, so it is reported and not used.
-                Some(estimate) if estimate.is_confident() && estimate.is_plausible() => {
-                    tracing::info!(
+                let estimate = latency::estimate(
+                    &refined.cameras[slot],
+                    trail,
+                    recording,
+                    &refined.offsets,
+                    &options.latency,
+                );
+
+                match estimate {
+                    // A walk too slow to leave a mark produces a
+                    // confident-looking minimum in noise. Applying that is
+                    // worse than applying nothing, so it is reported and not
+                    // used.
+                    Some(estimate) if estimate.is_confident() && estimate.is_plausible() => {
+                        tracing::info!(
+                            camera = %id,
+                            round,
+                            latency_ms = estimate.millis(),
+                            "measured the camera latency"
+                        );
+                        lags[slot] = estimate.latency;
+                    }
+                    Some(estimate) if !estimate.is_plausible() => tracing::warn!(
                         camera = %id,
                         latency_ms = estimate.millis(),
-                        "measured the camera latency"
-                    );
-                    lags[slot] = estimate.latency;
+                        "that is too long for a webcam to be behind; not applying it"
+                    ),
+                    Some(estimate) => tracing::warn!(
+                        camera = %id,
+                        latency_ms = estimate.millis(),
+                        sharpness = estimate.sharpness,
+                        "the walk was too slow to measure this camera's latency"
+                    ),
+                    None => {}
                 }
-                Some(estimate) if !estimate.is_plausible() => tracing::warn!(
-                    camera = %id,
-                    latency_ms = estimate.millis(),
-                    "that is too long for a webcam to be behind; not applying it"
-                ),
-                Some(estimate) => tracing::warn!(
-                    camera = %id,
-                    latency_ms = estimate.millis(),
-                    sharpness = estimate.sharpness,
-                    "the walk was too slow to measure this camera's latency"
-                ),
-                None => {}
+                estimates[slot] = estimate;
             }
-            estimates[slot] = estimate;
-        }
 
-        if lags.iter().any(|lag| !lag.is_zero()) {
+            if lags == before || lags.iter().all(Duration::is_zero) {
+                break;
+            }
+
+            // Re-seeded as well as re-paired. Correcting only the sightings
+            // leaves the refinement starting from a resection that was itself
+            // done against a walk the camera had not caught up with, and a seed
+            // that far out is not a seed the refinement pulls back: its outlier
+            // rejection throws away the sightings that disagree with it
+            // instead. A camera forty milliseconds late kept 51 of its 190
+            // sightings and came out 39 cm from where it was, with every other
+            // camera in the room fine.
+            (seeds, spreads) = seed(recording, &configs, &ids, &lags, options)?;
             sightings = pair(recording, &index, &lags);
             refined = refine(&seeds, &offsets, &sightings, &options.refine);
         }
@@ -378,6 +377,62 @@ pub fn solve(
 
 /// Pairs each recorded pixel with where its device was when the frame was
 /// actually exposed, which is `lag` before the timestamp it carries.
+/// Resects every camera on its own, pairing each pixel with where the device
+/// was when the shutter opened rather than when the frame was stamped.
+///
+/// Every rig contributes, not just the head. The head alone traces a narrow
+/// band of heights, and a set of points that close to a plane is degenerate for
+/// the linear solve; a hand raised and lowered is what gives the resection
+/// something to work with.
+fn seed(
+    recording: &Recording,
+    configs: &HashMap<&str, &CameraConfig>,
+    ids: &[String],
+    lags: &[Duration],
+    options: &SolveOptions,
+) -> Result<(Vec<Camera>, Vec<f64>)> {
+    let mut cameras = Vec::with_capacity(ids.len());
+    let mut spreads = Vec::with_capacity(ids.len());
+
+    for (slot, id) in ids.iter().enumerate() {
+        let (Some(trail), Some(config)) = (recording.trail(id), configs.get(id.as_str())) else {
+            bail!("camera {id} left the recording between one pass and the next");
+        };
+        let lag = lags.get(slot).copied().unwrap_or(Duration::ZERO);
+
+        let correspondences: Vec<Correspondence> = trail
+            .samples
+            .iter()
+            .filter_map(|sample| {
+                let pose = recording.tracks[sample.rig].at(sample.at.checked_sub(lag)?)?;
+                Some(Correspondence {
+                    world: Point3::from(pose.translation.vector),
+                    pixel: sample.pixel,
+                })
+            })
+            .collect();
+
+        let lens = Lens::for_kind(config.lens);
+        let guess = Intrinsics::from_fov(
+            trail.width,
+            trail.height,
+            seed_fov(config.lens).to_radians(),
+        );
+
+        let Some(resection) = resect(&guess, lens, &correspondences, &options.resection) else {
+            bail!(
+                "camera {id} could not be solved from {} correspondences",
+                correspondences.len()
+            );
+        };
+
+        cameras.push(resection.camera);
+        spreads.push(resection.spread);
+    }
+
+    Ok((cameras, spreads))
+}
+
 fn pair(recording: &Recording, index: &HashMap<&str, usize>, lags: &[Duration]) -> Vec<Sighting> {
     let mut out = Vec::new();
 
