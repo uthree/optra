@@ -1312,6 +1312,15 @@ nobody can see move is not about the complaint. This points `fusion` at
 `output`, against the direction every other dependency runs, which is the price
 of not keeping a second copy of the list.
 
+And only the ones a camera saw, which is what makes the last column true rather
+than merely tidy. A joint the fit invented carries the fit's `free_sigma` of
+half a metre, and the output stage will not build a tracker from anything it
+cannot place to within `max_sigma`, whose largest setting is thirty centimetres.
+So no configuration sends an invented joint, and a column labelled "sent" that
+counted one would report movement nobody receives. It read `fit 483 mm, sent
+408 mm` on a body standing out of shot — whose foot trackers were, for that same
+reason, not being sent at all.
+
 And the worst of those joints, not the median, which reverses the original
 choice. The median was picked so a single badly seen ankle could not become the
 whole body's verdict. That was wrong twice. A shaking room shakes on the

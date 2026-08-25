@@ -36,6 +36,14 @@
 //! everything else runs, which is the price of not keeping a second copy of the
 //! list.
 //!
+//! And only the ones a camera saw. A joint the fit invented carries the fit's
+//! `free_sigma` — half a metre — and the output stage will not build a tracker
+//! from anything it cannot place to within `max_sigma`, whose largest setting
+//! is thirty centimetres. No configuration sends an invented joint, so counting
+//! one here means the last column reports movement that reaches nobody. It read
+//! `fit 483 mm, sent 408 mm` on a body standing out of shot, whose foot
+//! trackers were for that same reason not being sent at all.
+//!
 //! And the worst joint rather than the median one, which is a reversal. The
 //! median was chosen so that a single badly seen ankle could not become the
 //! whole body's verdict, and that was the wrong instinct twice over. A room

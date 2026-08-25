@@ -850,8 +850,19 @@ struct ShakeMeters {
 
 impl ShakeMeters {
     /// Every meter is given the same joints — the ones a tracker is built from
-    /// — because the row is read as a comparison between the four and a
-    /// comparison across different populations is not one.
+    /// and a camera actually saw — because the row is read as a comparison
+    /// between the four and a comparison across different populations is not
+    /// one.
+    ///
+    /// The second half of that is not a refinement, it is what makes the last
+    /// column true. A joint the fit invented carries the fit's `free_sigma`
+    /// of uncertainty, half a metre, and the output stage will not build a
+    /// tracker from anything it cannot place to within `max_sigma` — a setting
+    /// whose largest value is thirty centimetres. So an invented joint cannot
+    /// reach a tracker under any configuration, and a column labelled "sent"
+    /// that measures one is describing movement nobody receives. It read 408 mm
+    /// on a body whose legs were out of shot and whose foot trackers were, for
+    /// that exact reason, not being sent at all.
     fn observe(&mut self, raw: &Pose3d, fitted: &Fitted, filtered: &Filtered) {
         self.raw.observe(
             raw.iter()
@@ -861,19 +872,19 @@ impl ShakeMeters {
         self.fitted.observe(
             fitted
                 .iter()
-                .filter(|(joint, _)| drives_a_tracker(*joint))
+                .filter(|(joint, fit)| drives_a_tracker(*joint) && !fit.inferred)
                 .map(|(joint, joint_fit)| (joint, joint_fit.point)),
         );
         self.filtered.observe(
             filtered
                 .iter()
-                .filter(|(joint, _)| drives_a_tracker(*joint))
+                .filter(|(joint, one)| drives_a_tracker(*joint) && !one.inferred)
                 .map(|(joint, one)| (joint, one.point)),
         );
         self.predicted.observe(
             filtered
                 .iter()
-                .filter(|(joint, _)| drives_a_tracker(*joint))
+                .filter(|(joint, one)| drives_a_tracker(*joint) && !one.inferred)
                 .map(|(joint, one)| (joint, one.predicted)),
         );
     }
@@ -1140,7 +1151,11 @@ mod tests {
     ///
     /// Every stage is given the same positions on purpose. These tests are
     /// about what the meters can see, not about what the filter can remove.
-    fn shaken(shaking: &[Joint]) -> Shake {
+    ///
+    /// `invented` says whether the shaking joints are ones the fit made up.
+    /// An invented joint never appears in the reconstruction and never reaches
+    /// a tracker, so a shake in one is movement that goes nowhere.
+    fn shaken(shaking: &[Joint], invented: bool) -> Shake {
         let at = Instant::now();
         let mut meters = ShakeMeters::default();
 
@@ -1152,24 +1167,27 @@ mod tests {
 
             for joint in Joint::ALL {
                 let shakes = shaking.contains(&joint);
+                let made_up = if shakes { invented } else { true };
                 let point = Point3::new(if shakes { wobble } else { 0.0 }, 1.0, 0.0);
 
-                raw.set(
-                    joint,
-                    FusedJoint {
-                        point,
-                        sigma: 0.01,
-                        residual: 0.0,
-                        weights: vec![(0, 1.0)],
-                        rejected: Vec::new(),
-                    },
-                );
+                if !made_up {
+                    raw.set(
+                        joint,
+                        FusedJoint {
+                            point,
+                            sigma: 0.01,
+                            residual: 0.0,
+                            weights: vec![(0, 1.0)],
+                            rejected: Vec::new(),
+                        },
+                    );
+                }
                 fitted.set(
                     joint,
                     FittedJoint {
                         point,
                         sigma: 0.01,
-                        inferred: !shakes,
+                        inferred: made_up,
                         correction: 0.0,
                     },
                 );
@@ -1181,7 +1199,7 @@ mod tests {
                         predicted: point,
                         lead: 0.0,
                         sigma: 0.01,
-                        inferred: !shakes,
+                        inferred: made_up,
                     },
                 );
             }
@@ -1212,7 +1230,7 @@ mod tests {
     #[test]
     fn two_shaking_ankles_are_not_averaged_away_by_a_calm_body() {
         // A centimetre alternating differences to twice the gap.
-        for (stage, metres) in stages(shaken(&[Joint::LeftAnkle, Joint::RightAnkle])) {
+        for (stage, metres) in stages(shaken(&[Joint::LeftAnkle, Joint::RightAnkle], false)) {
             assert!(
                 metres > 0.019,
                 "two shaking ankles read as {metres:.4} m at the {stage} stage"
@@ -1227,10 +1245,32 @@ mod tests {
     /// its head off is not a complaint anybody in VRChat can make.
     #[test]
     fn a_joint_that_never_reaches_a_tracker_cannot_take_over_the_row() {
-        for (stage, metres) in stages(shaken(&[Joint::Nose, Joint::LeftEye, Joint::RightEye])) {
+        for (stage, metres) in stages(shaken(
+            &[Joint::Nose, Joint::LeftEye, Joint::RightEye],
+            false,
+        )) {
             assert_eq!(
                 metres, 0.0,
                 "a shaking face read as {metres:.4} m at the {stage} stage"
+            );
+        }
+    }
+
+    /// The other way a joint reaches no tracker: the fit made it up.
+    ///
+    /// An invented joint carries the fit's `free_sigma` of half a metre, and
+    /// the output stage will not build a tracker from anything it cannot place
+    /// to within `max_sigma`, whose largest setting is thirty centimetres. So
+    /// no configuration sends one, and a column labelled "sent" that counted it
+    /// would be reporting movement nobody receives. The panel read `fit 483 mm,
+    /// sent 408 mm` on a body whose legs were out of shot -- and whose foot
+    /// trackers were, for that exact reason, not being sent at all.
+    #[test]
+    fn a_joint_the_fit_made_up_is_not_movement_anybody_receives() {
+        for (stage, metres) in stages(shaken(&[Joint::LeftAnkle, Joint::RightAnkle], true)) {
+            assert_eq!(
+                metres, 0.0,
+                "an invented ankle read as {metres:.4} m at the {stage} stage"
             );
         }
     }
