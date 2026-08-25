@@ -15,5 +15,6 @@ pub mod models;
 pub mod output;
 pub mod paths;
 pub mod pipeline;
+pub mod sim;
 pub mod vr;
 pub mod worker;
