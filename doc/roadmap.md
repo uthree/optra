@@ -147,6 +147,23 @@ profile. `tests/panels.rs` lays every panel out headlessly, which is how an
 immediate-mode UI gets tested at all — a panel nobody is looking at is never
 drawn, and a layout bug in it waits until someone is mid-walk.
 
+One more thing came out later, when a synthetic recording was finally given the
+camera delays that every real recording has. Both halves of the latency
+correction were wrong, and neither could show up against a prompt recording:
+
+- The measured delay was an underestimate, because the first fit had already
+  hidden part of it in the extrinsics. A camera ninety milliseconds late was
+  reported at fifty-two. The measurement and the fit now alternate.
+- Correcting the pairings was not enough on its own. The refinement was still
+  starting from a resection done against a walk the camera had not caught up
+  with, and its outlier rejection threw away the sightings that disagreed with
+  that seed rather than pulling the camera back — 51 of 190 kept, and the camera
+  39 cm from where it was. The resection is redone as well.
+
+A room whose cameras are 0, 20, 40 and 90 ms late now comes out to 5 mm.
+Ignoring the delays puts a camera nine metres away, which is the calibration
+every real installation would have had. See [design.md](design.md) section 8.3.
+
 What is left is a walk through a real room with the cameras where they will
 live. Everything the milestone calls for is written and green against synthetic
 rooms and against a Quest 3.
