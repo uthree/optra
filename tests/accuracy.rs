@@ -30,6 +30,18 @@
 //! - **swaps** — ticks where a joint came back nearer to its mirror image than
 //!   to itself. A foot tracker on the wrong foot is not a slightly worse foot
 //!   tracker, and averaging that into a tail would hide it.
+//! - **lag** — how far behind the body each stage is, found by scoring it
+//!   against the truth at a range of instants and taking the one it matches
+//!   best. A stage a centimetre out and a stage exactly right but twenty
+//!   milliseconds late score the same against a single instant, and they are
+//!   different faults: the first is noise and the second is latency, which is
+//!   what the prediction step exists to pay back.
+//!
+//! The last of those is scored on what the output stage would really send —
+//! the filter's extrapolation, against where the body will be when it arrives —
+//! and not on the smoother behind it. The smoothed pose is an intermediate that
+//! never leaves the process, and a harness that stopped there was reporting a
+//! number no user receives, better than the one they do by a factor of two.
 //!
 //! Bone lengths are reported alongside, measured against the lengths that were
 //! drawn. A body reconstructed to the wrong size is the one error a set of
@@ -86,6 +98,15 @@ const RATE: f64 = 20.0;
 /// since a real pose model drops joints and the meter gets fewer samples per
 /// second than the projected walk hands it.
 const LENGTH: f64 = 14.0;
+
+/// Offsets, in milliseconds, at which a stage's output is compared against the
+/// truth — negative meaning it is scored against where the body *was*.
+///
+/// Everything else here asks how far a joint is from the truth at the same
+/// instant, which cannot tell an output that is in the wrong place from one
+/// that is in the right place late. Those are different faults with different
+/// fixes, and on a walking body they cost about the same per centimetre.
+const SHIFTS_MS: [i64; 11] = [-100, -80, -60, -50, -40, -30, -20, -10, 0, 10, 20];
 
 // ---------------------------------------------------------------------------
 // Where the keypoints come from
@@ -219,6 +240,36 @@ fn quantile(values: &[f64], fraction: f64) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
     sorted[(((sorted.len() - 1) as f64) * fraction).round() as usize]
+}
+
+/// One stage's lower-body error against the truth at a range of instants.
+///
+/// The stage this exists for is the last one. A smoother that is a centimetre
+/// out and a smoother that is exactly right but twenty milliseconds behind
+/// score the same against the truth at the same instant, and they are not the
+/// same thing: the first is noise nothing can remove and the second is latency,
+/// which is what the prediction step is for. Sweeping the comparison instant
+/// separates them — the shift where the error bottoms out *is* the lag.
+#[derive(Debug, Default, Clone)]
+struct Timing {
+    by_shift: BTreeMap<i64, Tally>,
+}
+
+impl Timing {
+    /// The shift the output best matches, and the error there.
+    fn best(&self) -> (i64, f64) {
+        self.by_shift
+            .iter()
+            .map(|(shift, tally)| (*shift, tally.median()))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap_or((0, f64::NAN))
+    }
+
+    /// How far behind the body the output is, in milliseconds. Positive is
+    /// late, which is the only direction that hurts.
+    fn lag_millis(&self) -> f64 {
+        -self.best().0 as f64
+    }
 }
 
 /// A column of errors, kept so that the median and the tail can be reported.
@@ -386,6 +437,15 @@ struct Report {
     fitted: BTreeMap<Joint, Spatial>,
     /// The same after smoothing.
     smoothed: BTreeMap<Joint, Spatial>,
+    /// The value the output stage actually sends: the filter's extrapolation,
+    /// scored against where the body will be one prediction horizon later.
+    ///
+    /// Everything above this line is an intermediate. `Posture::predicted` is
+    /// what reaches a tracker, and a harness that stops at the smoother is
+    /// measuring a number no user ever receives.
+    predicted: BTreeMap<Joint, Spatial>,
+    /// How late each stage's output is, keyed by stage name.
+    timing: BTreeMap<&'static str, Timing>,
     /// Ticks where a joint was reconstructed nearer to its mirror image than to
     /// itself, which is the pose model putting a limb on the wrong side.
     swapped: BTreeMap<Joint, usize>,
@@ -521,13 +581,45 @@ fn table(report: &Report) -> String {
     }
     let fitted = report.lower_body(&report.spreads(&report.fitted));
     let smoothed = report.lower_body(&report.spreads(&report.smoothed));
+    let predicted = report.lower_body(&report.distances(&report.predicted));
     let _ = writeln!(
         out,
         "lower body spread after the fit: median {:.1} cm, p95 {:.1} cm; \
-         after smoothing: median {:.1} cm",
+         after smoothing: median {:.1} cm\n\
+         what the output stage would send, against where the body will be: \
+         median {:.1} cm, p95 {:.1} cm",
         fitted.median() * 100.0,
         fitted.p95() * 100.0,
-        smoothed.median() * 100.0
+        smoothed.median() * 100.0,
+        predicted.median() * 100.0,
+        predicted.p95() * 100.0
+    );
+
+    let _ = writeln!(
+        out,
+        "\n{:<12} {:>9} {:>12} {:>12}",
+        "stage", "lag ms", "at its lag", "at no lag"
+    );
+    let _ = writeln!(out, "{}", "-".repeat(48));
+    for (stage, timing) in &report.timing {
+        let (shift, best) = timing.best();
+        let _ = writeln!(
+            out,
+            "{stage:<12} {:>9.0} {:>11.2}cm {:>11.2}cm",
+            -shift as f64,
+            best * 100.0,
+            timing
+                .by_shift
+                .get(&0)
+                .map_or(f64::NAN, |tally| tally.median())
+                * 100.0
+        );
+    }
+    let _ = writeln!(
+        out,
+        "lag is how far behind the body a stage is: the offset where its error \
+         bottoms out.\nthe gap between the two columns is what being late costs, \
+         as against being wrong."
     );
 
     let _ = writeln!(
@@ -657,8 +749,10 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
     let skeleton = meter.finish();
     score_bones(&mut report, &skeleton, scene, &measure);
 
+    let filter_options = FilterOptions::default();
+    let horizon = filter_options.horizon.as_secs_f64();
     let mut fitter = Fitter::new(FitOptions::default());
-    let mut filter = PoseFilter::new(FilterOptions::default());
+    let mut filter = PoseFilter::new(filter_options);
     for (t, reconstruction) in &reconstructions[split..] {
         let posture = scene.posture(*t);
         let fitted = fitter.fit(reconstruction, &skeleton);
@@ -668,6 +762,39 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
         score_positions(&mut report.smoothed, &posture, |joint| {
             smoothed.position(joint)
         });
+
+        // The prediction is a claim about a later instant than the one it was
+        // computed from, so scoring it against the truth at `t` would mark it
+        // wrong for being right.
+        let ahead = scene.posture(*t + horizon);
+        score_positions(&mut report.predicted, &ahead, |joint| {
+            smoothed.predicted(joint)
+        });
+
+        score_timing(
+            report.timing.entry("fused").or_default(),
+            scene,
+            *t,
+            |joint| reconstruction.get(joint).map(|fused| fused.point),
+        );
+        score_timing(
+            report.timing.entry("fitted").or_default(),
+            scene,
+            *t,
+            |joint| fitted.position(joint),
+        );
+        score_timing(
+            report.timing.entry("smoothed").or_default(),
+            scene,
+            *t,
+            |joint| smoothed.position(joint),
+        );
+        score_timing(
+            report.timing.entry("predicted").or_default(),
+            scene,
+            *t + horizon,
+            |joint| smoothed.predicted(joint),
+        );
     }
 
     report
@@ -722,6 +849,29 @@ fn score_positions(
                 ]);
             }
             None => spatial.miss(),
+        }
+    }
+}
+
+/// Scores one stage's lower body against the truth at each of [`SHIFTS_MS`],
+/// so that being late can be told apart from being wrong.
+fn score_timing(
+    timing: &mut Timing,
+    scene: &Scene,
+    claimed: f64,
+    position: impl Fn(Joint) -> Option<nalgebra::Point3<f64>>,
+) {
+    for shift in SHIFTS_MS {
+        let then = scene.posture(claimed + shift as f64 / 1000.0);
+        let tally = timing.by_shift.entry(shift).or_default();
+        for (joint, expected) in then.iter() {
+            if !joint.is_lower_body() {
+                continue;
+            }
+            match position(joint) {
+                Some(point) => tally.add((point - expected).norm()),
+                None => tally.miss(),
+            }
         }
     }
 }
@@ -864,6 +1014,52 @@ fn a_simulated_walk_is_reconstructed_from_perfect_keypoints() {
         report.bone_coverage > 0.99,
         "only {:.0}% of the skeleton settled over a {LENGTH} second walk",
         report.bone_coverage * 100.0
+    );
+
+    // What the output stage would actually send. Held loosely and on purpose.
+    //
+    // The chain is accurate to half a centimetre through the fit and then loses
+    // most of that in the filter: what goes out is about 4.5 cm from the truth,
+    // and the timing table says roughly 80 ms of that is lag rather than error —
+    // the prediction moves its own timestamp a horizon forward while moving the
+    // body it describes about a tenth as far. The cause is isolated: the
+    // velocity credibility gate multiplies the extrapolation by a factor that
+    // averages 0.12 on this walk, because an agility of 5 m/s^2 at 20 Hz leaves
+    // a velocity noise floor of 0.65 m/s and a hip does not walk that fast.
+    //
+    // It is not tuned here because the two synthetic walks disagree about the
+    // fix. Lowering the agility takes this walk from 4.6 cm to 2.5 cm and the
+    // one in `tests/fusion.rs` — whose legs move at a couple of metres per
+    // second — from 6.6 cm to 9.2 cm. That is the real trade rather than a bug,
+    // and picking a side needs to be a decision about which body matters.
+    //
+    // So the number is pinned rather than chased: this catches the filter
+    // getting worse, and the timing table is what any attempt to make it better
+    // would be read against.
+    let shipped = report.lower_body(&report.distances(&report.predicted));
+    assert!(
+        shipped.median() < 0.07,
+        "the output stage would send the lower body {:.1} cm from where the \
+         body will be",
+        shipped.median() * 100.0
+    );
+
+    let timing = report.timing.get("predicted").expect("the shipped stage");
+    assert!(
+        timing.lag_millis() <= 100.0,
+        "what goes out is {:.0} ms behind the body it claims to describe",
+        timing.lag_millis()
+    );
+
+    // The fit is the last stage that is not paying for latency, and it is the
+    // one that says the geometry above it is right. If this moves, the cause is
+    // upstream of the filter and the paragraph above does not apply.
+    let fitted = report.timing.get("fitted").expect("the fitted stage");
+    assert!(
+        fitted.lag_millis().abs() < 20.0,
+        "the fit is {:.0} ms out of time with the body, which nothing upstream \
+         of the filter should be",
+        fitted.lag_millis()
     );
 }
 
