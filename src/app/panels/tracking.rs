@@ -224,11 +224,21 @@ impl TrackingPanel {
         // and it is what says whether a camera has been knocked since it was
         // solved. One means the rays landed exactly as accurately as the pose
         // models claimed they would.
+        //
+        // The joint count next to it is not decoration. This is measured only
+        // over the joints that could be solved, and a joint whose rays missed
+        // each other entirely is not among them — so on a body where most of
+        // the joints failed outright, a fine-looking figure here is a fine
+        // figure about the handful that survived. It read 1.2x on a room where
+        // eleven joints could not be triangulated at all.
         if stats.disagreement > 0.0 {
+            let solid = stats.tally.measured >= 8;
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Cameras agree to").weak());
                 ui.colored_label(
-                    if stats.disagreement <= 1.5 {
+                    if !solid {
+                        FAIR
+                    } else if stats.disagreement <= 1.5 {
                         GOOD
                     } else if stats.disagreement <= 3.0 {
                         FAIR
@@ -236,6 +246,13 @@ impl TrackingPanel {
                         BAD
                     },
                     format!("{:.1}\u{00d7} their own keypoints", stats.disagreement),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "measured on the {} joint(s) that could be solved",
+                        stats.tally.measured
+                    ))
+                    .weak(),
                 );
             });
         }
@@ -541,12 +558,17 @@ fn joints(ui: &mut egui::Ui, frame: &FusionFrame) {
                     ui.label(match why {
                         Some(Missing::Unsure { offered, .. }) => format!("{offered} unsure"),
                         Some(Missing::OneRay) => "1".to_owned(),
-                        Some(Missing::Disagreed { rays }) => format!("{rays} split"),
+                        Some(Missing::Disagreed { rays, .. }) => format!("{rays} split"),
                         _ => "\u{2014}".to_owned(),
                     });
                     ui.label(match why {
                         Some(Missing::Uncertain { sigma }) => {
                             RichText::new(format!("{:.0} mm", sigma * 1000.0)).color(BAD)
+                        }
+                        // How far apart the rays were is the whole diagnosis for
+                        // a joint that could not be solved.
+                        Some(Missing::Disagreed { miss, .. }) => {
+                            RichText::new(format!("{:.0} cm apart", miss * 100.0)).color(BAD)
                         }
                         _ => RichText::new("inferred").color(INFERRED),
                     });

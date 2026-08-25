@@ -370,6 +370,39 @@ fn solve(
     ))
 }
 
+/// How near the nearest pair of rays came to meeting, in metres.
+///
+/// Only asked when triangulation has already failed, and only to say by how
+/// much. The size of it is the diagnosis: a couple of centimetres is keypoint
+/// noise and a threshold set too tight, twenty is the two cameras looking at
+/// different legs of the same person, and a metre is them looking at different
+/// people.
+pub fn closest_approach(cameras: &[Camera], observations: &[Observation]) -> Option<f64> {
+    let mut closest = f64::INFINITY;
+
+    for i in 0..observations.len() {
+        for j in (i + 1)..observations.len() {
+            let first = cameras.get(observations[i].camera)?;
+            let second = cameras.get(observations[j].camera)?;
+            let a = first.ray(observations[i].pixel).into_inner();
+            let b = second.ray(observations[j].pixel).into_inner();
+
+            let normal = a.cross(&b);
+            let length = normal.norm();
+            // Parallel rays never meet and never miss either; there is no
+            // distance between them worth reporting.
+            if length < 1e-9 {
+                continue;
+            }
+
+            let between = second.position() - first.position();
+            closest = closest.min((between.dot(&normal) / length).abs());
+        }
+    }
+
+    closest.is_finite().then_some(closest)
+}
+
 fn residual(cameras: &[Camera], observation: &Observation, point: Point3<f64>) -> Option<f64> {
     cameras
         .get(observation.camera)?

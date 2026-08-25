@@ -298,6 +298,7 @@ fn tracked_fusion() -> Fusion {
         disagreement: 2.4,
         tally: optra::fusion::fuse::Tally {
             measured: 5,
+            miss: 0.28,
             unseen: 12,
             unsure: 6,
             one_ray: 2,

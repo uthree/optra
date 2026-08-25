@@ -18,7 +18,7 @@ use std::time::Instant;
 use nalgebra::Point3;
 
 use crate::geometry::camera::Camera;
-use crate::geometry::triangulate::{Observation, Triangulation, triangulate};
+use crate::geometry::triangulate::{Observation, Triangulation, closest_approach, triangulate};
 use crate::models::Joint;
 
 use super::align::Aligned;
@@ -76,17 +76,23 @@ pub enum Missing {
     /// One usable ray, which fixes a direction and nothing else. A second
     /// camera has to be able to see this joint.
     OneRay,
-    /// Rays were there and the geometry could not be solved from any subset of
-    /// them at all.
+    /// Rays were there and no pair of them came near enough to meeting to be
+    /// worth solving from. `miss` is how near the nearest pair got, in metres,
+    /// and the size of it is the whole diagnosis: a couple of centimetres is
+    /// keypoint noise against a gate set too tight, twenty is two cameras
+    /// looking at different legs of the same person, a metre is them looking at
+    /// different people.
     ///
-    /// Rarer than it sounds, and worth being clear about why: *two* rays can
-    /// never disagree. Two skew lines always have a nearest point, so a badly
-    /// calibrated pair does not fail — the point simply moves, confidently, to
-    /// somewhere the joint is not. The only thing standing between a user and
-    /// that is the uncertainty below. Disagreement can only be *detected* from
-    /// three rays up, and even then the usual outcome is that the odd ray is
-    /// dropped and the joint is reported without it.
-    Disagreed { rays: usize },
+    /// Only reachable from three rays up. With exactly two this stage does not
+    /// test agreement at all — there is nothing to outvote — so a badly
+    /// calibrated pair does not fail here; it produces a point, confidently, in
+    /// the wrong place, and only the uncertainty stands between a user and it.
+    /// Even with a test, a pair is blind to any error along the epipolar
+    /// direction: perturb one ray within the plane the two of them share and
+    /// they still meet exactly, just somewhere else. That is the direction that
+    /// moves the answer, so the third camera is not a refinement. It is the
+    /// first one that can tell you the other two are wrong.
+    Disagreed { rays: usize, miss: f64 },
     /// Solved, but to a position too uncertain to be worth reporting — the
     /// cameras that saw it are too close together, or too nearly in line with
     /// it, to say where along the ray it sits.
@@ -120,9 +126,12 @@ impl Missing {
 ///
 /// The counts are what belongs on the panel: one joint's reason is a curiosity,
 /// and the same reason for fifteen joints is the fault.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Tally {
     pub measured: usize,
+    /// Median distance the nearest pair of rays missed by, over the joints that
+    /// could not be solved at all, in metres. The size of it is the diagnosis.
+    pub miss: f64,
     pub unseen: usize,
     pub unsure: usize,
     pub one_ray: usize,
@@ -137,17 +146,25 @@ impl Tally {
 
     /// The reason accounting for the most joints, when there are enough of them
     /// to be worth naming.
-    pub fn commonest(&self) -> Option<(&'static str, usize)> {
+    pub fn commonest(&self) -> Option<(String, usize)> {
         [
-            ("no camera has them in shot", self.unseen),
+            ("no camera has them in shot".to_owned(), self.unseen),
             (
-                "their keypoints fall below the confidence gate",
+                "their keypoints fall below the confidence gate".to_owned(),
                 self.unsure,
             ),
-            ("only one camera can see them", self.one_ray),
-            ("the cameras disagree about where they are", self.disagreed),
+            ("only one camera can see them".to_owned(), self.one_ray),
             (
-                "the cameras that see them cannot place them",
+                // The distance is the diagnosis, so it is in the sentence.
+                format!(
+                    "no two cameras agree where they are, missing each other by {:.0} cm \
+                     at the nearest",
+                    self.miss * 100.0
+                ),
+                self.disagreed,
+            ),
+            (
+                "the cameras that see them cannot place them".to_owned(),
                 self.uncertain,
             ),
         ]
@@ -156,6 +173,7 @@ impl Tally {
         .filter(|(_, count)| *count > 0)
     }
 }
+
 /// One joint as the cameras reconstructed it.
 #[derive(Debug, Clone)]
 pub struct FusedJoint {
@@ -244,6 +262,24 @@ impl Pose3d {
             };
             *slot += 1;
         }
+
+        // Median rather than mean: one joint whose rays are a room apart is a
+        // keypoint on somebody else, and it should not become the figure that
+        // describes the other ten.
+        let mut misses: Vec<f64> = self
+            .missing
+            .iter()
+            .flatten()
+            .filter_map(|why| match why {
+                Missing::Disagreed { miss, .. } if miss.is_finite() => Some(*miss),
+                _ => None,
+            })
+            .collect();
+        if !misses.is_empty() {
+            misses.sort_by(f64::total_cmp);
+            tally.miss = misses[misses.len() / 2];
+        }
+
         tally
     }
 
@@ -331,6 +367,7 @@ pub fn fuse(
                 joint,
                 Missing::Disagreed {
                     rays: observations.len(),
+                    miss: closest_approach(cameras, &observations).unwrap_or(f64::NAN),
                 },
             );
             continue;
