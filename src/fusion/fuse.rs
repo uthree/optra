@@ -344,7 +344,6 @@ mod tests {
         )
     }
 
-
     /// The same body, with one camera's keypoints landing a few pixels from
     /// where its calibration says they should — which is what a room that has
     /// drifted, or a camera that has been nudged, looks like from in here.
@@ -393,7 +392,9 @@ mod tests {
         );
 
         let calm = agreeing.get(Joint::Hip).expect("the hip was visible");
-        let shaken = disagreeing.get(Joint::Hip).expect("the hip was still visible");
+        let shaken = disagreeing
+            .get(Joint::Hip)
+            .expect("the hip was still visible");
         assert!(
             shaken.sigma > calm.sigma * 1.8,
             "the hip claimed {:.1} mm against {:.1} mm, which is not enough of a difference",
