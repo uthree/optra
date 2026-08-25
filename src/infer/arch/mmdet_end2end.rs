@@ -105,32 +105,192 @@ impl Detector for MmdetEnd2End {
                 bail!("the box tensor has {stride} values per box, expected at least 5");
             }
 
-            let mut found = Vec::new();
-            for (index, box_values) in dets.chunks_exact(stride).enumerate() {
-                let score = box_values[4];
-                if score < self.score_threshold {
-                    // mmdeploy pads the output to a fixed length with zero
-                    // scores, so the first low score ends the real boxes.
-                    break;
-                }
-                if labels.get(index).copied().unwrap_or(self.person_class) != self.person_class {
-                    continue;
-                }
-
-                let (x1, y1) = mapping.to_source(box_values[0], box_values[1]);
-                let (x2, y2) = mapping.to_source(box_values[2], box_values[3]);
-                found.push(Detection {
-                    x1: x1.clamp(0.0, image.width as f32),
-                    y1: y1.clamp(0.0, image.height as f32),
-                    x2: x2.clamp(0.0, image.width as f32),
-                    y2: y2.clamp(0.0, image.height as f32),
-                    score,
-                });
-            }
-
-            results.push(found);
+            results.push(decode(
+                dets,
+                labels,
+                stride,
+                &mapping,
+                Bounds {
+                    width: image.width as f32,
+                    height: image.height as f32,
+                },
+                self.score_threshold,
+                self.person_class,
+            ));
         }
 
         Ok(results)
+    }
+}
+
+/// The frame a box has to end up inside.
+struct Bounds {
+    width: f32,
+    height: f32,
+}
+
+/// Turns one image's box tensor into detections in source-image pixels.
+///
+/// Pulled out of the session call so it can be tested. Three of the things it
+/// does are only visible in a picture and silent otherwise: mmdeploy pads its
+/// output to a fixed length rather than reporting a count, the class column
+/// decides whether a box is a person or a chair, and the letterbox has to be
+/// undone in the right direction.
+#[allow(clippy::too_many_arguments)]
+fn decode(
+    dets: &[f32],
+    labels: &[i64],
+    stride: usize,
+    mapping: &Mapping,
+    bounds: Bounds,
+    score_threshold: f32,
+    person_class: i64,
+) -> Vec<Detection> {
+    let mut found = Vec::new();
+
+    for (index, box_values) in dets.chunks_exact(stride).enumerate() {
+        let score = box_values[4];
+        if score < score_threshold {
+            // mmdeploy pads the output to a fixed length with zero scores and
+            // sorts by score, so the first low one ends the real boxes.
+            break;
+        }
+        if labels.get(index).copied().unwrap_or(person_class) != person_class {
+            continue;
+        }
+
+        let (x1, y1) = mapping.to_source(box_values[0], box_values[1]);
+        let (x2, y2) = mapping.to_source(box_values[2], box_values[3]);
+        found.push(Detection {
+            x1: x1.clamp(0.0, bounds.width),
+            y1: y1.clamp(0.0, bounds.height),
+            x2: x2.clamp(0.0, bounds.width),
+            y2: y2.clamp(0.0, bounds.height),
+            score,
+        });
+    }
+
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STRIDE: usize = 5;
+
+    fn identity() -> Mapping {
+        Mapping {
+            scale_x: 1.0,
+            scale_y: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }
+    }
+
+    fn frame() -> Bounds {
+        Bounds {
+            width: 640.0,
+            height: 480.0,
+        }
+    }
+
+    fn boxes(rows: &[[f32; STRIDE]]) -> Vec<f32> {
+        rows.iter().flatten().copied().collect()
+    }
+
+    #[test]
+    fn a_confident_person_comes_back_in_source_pixels() {
+        let dets = boxes(&[[10.0, 20.0, 110.0, 320.0, 0.9]]);
+        let found = decode(&dets, &[0], STRIDE, &identity(), frame(), 0.3, 0);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (found[0].x1, found[0].y1, found[0].x2, found[0].y2),
+            (10.0, 20.0, 110.0, 320.0)
+        );
+        assert_eq!(found[0].score, 0.9);
+    }
+
+    /// The output is a fixed-length buffer, sorted by score and padded with
+    /// zeros. Reading past the first weak box is reading padding, and a
+    /// hundred zero-sized detections at the origin is what comes back.
+    #[test]
+    fn the_padding_after_the_last_real_box_is_not_read() {
+        let dets = boxes(&[
+            [10.0, 20.0, 110.0, 320.0, 0.9],
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+        ]);
+        let found = decode(&dets, &[0, 0, 0], STRIDE, &identity(), frame(), 0.3, 0);
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn something_that_is_not_a_person_is_skipped() {
+        let dets = boxes(&[
+            [10.0, 20.0, 110.0, 320.0, 0.9],
+            [200.0, 30.0, 300.0, 200.0, 0.8],
+        ]);
+        // The second box is class 56, a chair.
+        let found = decode(&dets, &[0, 56], STRIDE, &identity(), frame(), 0.3, 0);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].x1, 10.0);
+    }
+
+    /// A model is run on a letterboxed copy, so every box comes back in the
+    /// model's coordinates and has to be brought back. Getting the direction
+    /// wrong puts every person in the top left corner.
+    #[test]
+    fn the_letterbox_is_undone_rather_than_applied_again() {
+        let dets = boxes(&[[10.0, 20.0, 110.0, 320.0, 0.9]]);
+        let mapping = Mapping {
+            scale_x: 2.0,
+            scale_y: 2.0,
+            offset_x: 0.0,
+            offset_y: -40.0,
+        };
+        let found = decode(&dets, &[0], STRIDE, &mapping, frame(), 0.3, 0);
+
+        assert_eq!(
+            (found[0].x1, found[0].y1, found[0].x2, found[0].y2),
+            (20.0, 0.0, 220.0, 480.0)
+        );
+    }
+
+    /// A box that runs past the frame is a person standing at the edge, not a
+    /// reason to drop them — but a crop taken from outside the image is not a
+    /// crop, so it is held to the frame.
+    #[test]
+    fn a_box_running_off_the_frame_is_held_to_it() {
+        let dets = boxes(&[[-30.0, -10.0, 900.0, 700.0, 0.9]]);
+        let found = decode(&dets, &[0], STRIDE, &identity(), frame(), 0.3, 0);
+
+        assert_eq!(
+            (found[0].x1, found[0].y1, found[0].x2, found[0].y2),
+            (0.0, 0.0, 640.0, 480.0)
+        );
+    }
+
+    /// A tensor with more columns than the five that are read — some exports
+    /// carry the class in the box row as well — must not shift every box by
+    /// one column.
+    #[test]
+    fn extra_columns_do_not_shift_the_boxes() {
+        let dets: Vec<f32> = vec![
+            10.0, 20.0, 110.0, 320.0, 0.9, 0.0, //
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let found = decode(&dets, &[0, 0], 6, &identity(), frame(), 0.3, 0);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].x1, found[0].y1), (10.0, 20.0));
+    }
+
+    #[test]
+    fn an_image_with_nobody_in_it_produces_nothing() {
+        let dets = boxes(&[[0.0, 0.0, 0.0, 0.0, 0.0]]);
+        assert!(decode(&dets, &[0], STRIDE, &identity(), frame(), 0.3, 0).is_empty());
     }
 }
