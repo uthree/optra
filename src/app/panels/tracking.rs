@@ -278,6 +278,20 @@ impl TrackingPanel {
                     ))
                     .weak(),
                 );
+                // The other half of the sentence. "The cameras disagreed" is
+                // only half a fact until it says what they were asked for: a
+                // gate tighter than the room profile that set it throws out
+                // rays that were right, and the two numbers side by side are
+                // what makes that visible instead of just "18 disagreed".
+                if stats.gate > 0.0 {
+                    ui.label(
+                        RichText::new(format!(
+                            "\u{2014} rays had to pass within {:.1}\u{00b0}",
+                            stats.gate.to_degrees()
+                        ))
+                        .weak(),
+                    );
+                }
             });
         }
 

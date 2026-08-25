@@ -892,6 +892,36 @@ correctly loses influence during fast motion without being switched off. The
 RANSAC inlier threshold is likewise angular, so it means the same thing on every
 camera.
 
+That threshold is read off the room profile rather than chosen here, and for a
+while it was not. A constant of 0.01 rad — half a degree — was applied to every
+room, including rooms whose own calibration reported over a degree of
+reprojection error. A gate set below the error of the thing it is judging
+throws out rays that were as right as that room can make them, and the panel
+reports the loss as `disagreed`, which reads as a fault in the cameras rather
+than in the threshold. So the gate is now `2 × rms` of the loaded profile,
+clamped to `[0.01, 0.06]` rad: the lower bound because below it the number is
+describing the arithmetic rather than the room, and the upper because a gate
+much past three degrees stops telling one ankle from the other at the range a
+webcam works at — a room worse than that needs re-calibrating, not a wider gate.
+
+The factor of two is because RMS is an average and honest rays land either side
+of it, while a keypoint the pose model put on the wrong limb misses by far more
+than twice. How much of a room's calibration error actually reaches this test
+depends on where the cameras are: two rays absorb error along the plane they
+share by sliding the point along it rather than by missing each other, so the
+same profile produces different residuals in different rooms. That is the
+argument for reading the gate off the calibration rather than picking one number
+for every room that will ever run this.
+
+The same gate applies to a pair. It did not, once: with exactly two
+observations the inlier test was skipped entirely, on the reasoning that there
+is no vote to take. There is still a question to ask — do these two agree with
+each other? — and skipping it made a second camera strictly safer than a third.
+Three rays had to pass a test; two were waved through, so on a three-camera body
+the joints that came back were disproportionately the ones that had fallen back
+to a pair, which are the ones with the least evidence behind them. More cameras
+made a joint less likely to be reported, which is the opposite of what a third
+camera is for.
 The linear solve is a seed, not the answer. It minimizes an algebraic quantity
 that vanishes at the right point but is biased towards the nearest cameras away
 from it, so the result is refined against the objective it is actually judged by:

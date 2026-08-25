@@ -158,7 +158,20 @@ pub fn triangulate(
     let mut best: Option<(Vec<usize>, Point3<f64>)> = None;
 
     if observations.len() == 2 {
+        // Held to the same gate as three. There is no vote to take with two
+        // rays, but there is still a question worth asking -- do these two
+        // agree with each other? -- and skipping it made a second camera
+        // strictly safer than a third: three rays had to pass, two were waved
+        // through. So the joints a three-camera room reported were the ones
+        // that had fallen back to a pair, which are the ones with the least
+        // evidence behind them.
         let point = solve(cameras, observations, &all)?;
+        let agreed = all.iter().all(|index| {
+            residual(cameras, &observations[*index], point).is_some_and(|r| r <= inlier_threshold)
+        });
+        if !agreed {
+            return None;
+        }
         best = Some((all.clone(), point));
     } else {
         // Every pair is a hypothesis. With at most four cameras this is six
@@ -766,5 +779,43 @@ mod tests {
         let stale = Observation::new(0, &camera, pixel, 0.9, 3.0);
 
         assert!((stale.sigma - 3.0 * fresh.sigma).abs() < 1e-12);
+    }
+
+    /// Two rays that point at different things are two rays that point at
+    /// different things, whether or not there is a third to say so. This used
+    /// to be waved through: with exactly two observations the inlier test was
+    /// skipped, so a pair produced a confident point wherever their lines came
+    /// nearest, and the only thing between the user and it was the uncertainty
+    /// gate -- which a pair with a decent baseline passes easily.
+    ///
+    /// The cost of skipping it fell on the rooms with the most cameras. Three
+    /// rays had to agree; two never had to, so on a three-camera body the
+    /// joints that came back were disproportionately the ones that had fallen
+    /// back to a pair, which are the ones with the least evidence behind them.
+    #[test]
+    fn two_rays_pointing_at_different_things_are_not_a_measurement() {
+        let cameras = room();
+        let point = Point3::new(0.0, 1.0, 0.0);
+        let honest = sightings(&cameras[..2], point, 0.9);
+        assert!(
+            triangulate(&cameras, &honest, 0.01).is_some(),
+            "two rays that do meet are still a measurement"
+        );
+
+        // One camera looking at a joint the other is not: forty centimetres
+        // up, which is a hip mistaken for a chest. Up rather than sideways
+        // because these two cameras sit side by side, and a pair is blind
+        // along the line between them -- slide the target that way and the
+        // rays still meet exactly, just somewhere else.
+        let mut split = honest.clone();
+        split[1] = sightings(&cameras[1..2], Point3::new(0.0, 1.4, 0.0), 0.9)
+            .pop()
+            .map(|observation| Observation::new(1, &cameras[1], observation.pixel, 0.9, 1.0))
+            .expect("the second camera can see it");
+
+        assert!(
+            triangulate(&cameras, &split, 0.01).is_none(),
+            "a pair that disagrees has to fail the same test three rays would"
+        );
     }
 }

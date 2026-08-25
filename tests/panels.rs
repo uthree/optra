@@ -300,6 +300,7 @@ fn tracked_fusion() -> Fusion {
         lower_body: 4,
         worst_correction: 0.031,
         disagreement: 2.4,
+        gate: 0.0454,
         // Timid enough that the panel draws the advice under the row as well as
         // the figure, so the layout test covers the taller of the two shapes.
         reach: Some(0.18),

@@ -34,6 +34,10 @@ pub struct FuseOptions {
     pub min_confidence: f64,
     /// Angular disagreement past which a ray is treated as seeing something
     /// else, in radians.
+    ///
+    /// Set from the loaded room profile by [`ray_gate`], not chosen here. The
+    /// default is that function's floor, for the tests and for a stage with no
+    /// room behind it.
     pub inlier_threshold: f64,
     /// Positional uncertainty past which a joint is not reported at all, in
     /// metres.
@@ -54,9 +58,9 @@ impl Default for FuseOptions {
     fn default() -> Self {
         Self {
             min_confidence: 0.3,
-            // About half a degree. Loose enough for keypoint noise on a weak
-            // detection, tight enough that a limb the model put on the wrong
-            // leg does not pass for the right one.
+            // Replaced at startup by the gate the room earned. A room this
+            // good exists; assuming every room is is what the constant used to
+            // do.
             inlier_threshold: 0.01,
             max_sigma: 0.10,
             // A tenth of a second at sixty hertz. Long enough that a joint
@@ -67,6 +71,40 @@ impl Default for FuseOptions {
             settle_ticks: 6,
         }
     }
+}
+
+/// The angular gate a room has earned, in radians.
+///
+/// A ray is called an outlier when it misses the point the other rays agree
+/// on, and that test needs a distance. The constant this used to be assumed a
+/// calibration better than most rooms ever get: half a degree, applied to
+/// profiles whose own reprojection error is over a degree. A gate set below
+/// the error of the thing it is testing rejects the truth, and it rejected it
+/// hardest exactly where there was most evidence to work with -- three rays
+/// get tested against each other, two rays used to skip the test entirely, so
+/// the joints that survived a three-camera room were the ones nobody had
+/// checked. More cameras made a joint less likely to be reported, which is the
+/// opposite of what a third camera is for.
+///
+/// So the gate is read off the calibration instead of assumed. `SLACK` is how
+/// many times the room's own RMS one ray may miss by before it is looking at
+/// something else: two, because RMS is an average and honest rays land either
+/// side of it, and because a keypoint the model put on the wrong leg misses by
+/// far more than twice.
+pub fn ray_gate(room_rms: f64) -> f64 {
+    const SLACK: f64 = 2.0;
+    /// Below this the gate is measuring the arithmetic rather than the room.
+    const FLOOR: f64 = 0.01;
+    /// Above this the gate stops telling one leg from the other. At the metre
+    /// and a half a webcam watches from, the ankles are about eight degrees
+    /// apart, so the gate has to stay well inside that however bad the room is
+    /// -- a room worse than this needs re-calibrating, not a wider gate.
+    const CEILING: f64 = 0.06;
+
+    if !room_rms.is_finite() || room_rms <= 0.0 {
+        return FLOOR;
+    }
+    (SLACK * room_rms).clamp(FLOOR, CEILING)
 }
 
 /// Why a joint is not in the reconstruction.
@@ -965,5 +1003,137 @@ mod tests {
                 "the hip went missing on tick {tick} with nothing wrong"
             );
         }
+    }
+
+    /// Keypoints scattered the way a real room scatters them: every camera a
+    /// little out, in its own direction, by about what the calibration said it
+    /// would be. Nothing here is wrong -- this is a working room.
+    fn scattered(cameras: &[Camera], pixels: f32) -> Vec<(usize, Aligned)> {
+        (0..cameras.len())
+            .map(|index| {
+                let mut keypoints = Keypoints2d::default();
+                for (nth, (joint, point)) in body().into_iter().enumerate() {
+                    // A different direction for every camera and every joint.
+                    // A nudge that runs the same way for a whole body is not
+                    // calibration error, it is a camera pointing slightly
+                    // wrong, and two rays absorb that by moving the point
+                    // along the plane they share rather than by missing each
+                    // other. Real reprojection error has no such direction.
+                    let angle = (index * 5 + nth * 11) as f32 * 2.399_963;
+                    if let Some(pixel) = cameras[index].project(point) {
+                        keypoints.set(
+                            joint,
+                            Keypoint {
+                                x: pixel.x as f32 + pixels * angle.cos(),
+                                y: pixel.y as f32 + pixels * angle.sin(),
+                                confidence: 0.9,
+                            },
+                        );
+                    }
+                }
+                (index, still(keypoints))
+            })
+            .collect()
+    }
+
+    /// The same body, the same keypoints, judged by two gates. A room solved
+    /// to 1.3 degrees -- an ordinary result for webcams at shoulder height --
+    /// earns a gate that keeps its whole body. The half-degree constant that
+    /// used to be here loses two of the five, and the panel calls the loss
+    /// "disagreed", which reads as a fault in the cameras rather than in the
+    /// threshold that judged them.
+    ///
+    /// What decides the gate is not the room's error alone: two rays absorb a
+    /// good deal of it by sliding the point along the plane they share, and
+    /// how much they absorb depends on where the cameras are. That is the
+    /// argument for reading the gate off the calibration rather than setting
+    /// it once for every room that will ever run this.
+    #[test]
+    fn a_constant_gate_loses_joints_a_room_derived_one_keeps() {
+        let cameras = room();
+        let views = scattered(&cameras, 60.0);
+        let at = Instant::now();
+
+        let strict = fuse(
+            &cameras,
+            &views,
+            at,
+            &FuseOptions {
+                inlier_threshold: 0.01,
+                ..FuseOptions::default()
+            },
+            &mut Settling::default(),
+        );
+        let earned = fuse(
+            &cameras,
+            &views,
+            at,
+            &FuseOptions {
+                inlier_threshold: ray_gate(1.3f64.to_radians()),
+                ..FuseOptions::default()
+            },
+            &mut Settling::default(),
+        );
+
+        assert_eq!(
+            earned.tally().measured,
+            body().len(),
+            "the gate this room earned should let its own keypoints through: {:?}",
+            earned.tally()
+        );
+        assert!(
+            strict.tally().measured < earned.tally().measured,
+            "half a degree was supposed to cost this room joints: {:?}",
+            strict.tally()
+        );
+        assert!(
+            strict.tally().disagreed > 0,
+            "and to lose them as disagreement: {:?}",
+            strict.tally()
+        );
+    }
+
+    /// A gate wider than the calibration is not a gate that accepts anything.
+    /// A keypoint the pose model put on the other leg is twenty centimetres
+    /// out at a metre and a half, which is degrees away, not tenths of one.
+    #[test]
+    fn a_widened_gate_still_refuses_a_ray_pointing_somewhere_else() {
+        let cameras = room();
+        let mut views = scattered(&cameras, 22.0);
+        views[2] = nudged(&cameras, 2, 0.9, 140.0);
+
+        let fused = fuse(
+            &cameras,
+            &views,
+            Instant::now(),
+            &FuseOptions {
+                inlier_threshold: ray_gate(1.3f64.to_radians()),
+                ..FuseOptions::default()
+            },
+            &mut Settling::default(),
+        );
+
+        let hip = fused.get(Joint::Hip).expect("two good cameras remain");
+        assert!(
+            hip.rejected.contains(&2),
+            "the ray pointing somewhere else should have been dropped: {:?}",
+            hip.rejected
+        );
+    }
+
+    #[test]
+    fn the_gate_tracks_the_calibration_and_stops_at_both_ends() {
+        // A room solved to a tenth of a degree does not get a tenth-degree
+        // gate: below the floor the number stops describing the room.
+        assert_eq!(ray_gate(0.1f64.to_radians()), 0.01);
+        // The ordinary case, and the one that was broken: twice 1.3 degrees.
+        assert!((ray_gate(1.3f64.to_radians()) - 0.0454).abs() < 0.001);
+        // A room this bad needs re-calibrating, not a gate wide enough to
+        // confuse one ankle for the other.
+        assert_eq!(ray_gate(9.0f64.to_radians()), 0.06);
+        // A profile with no usable error in it falls back to the floor rather
+        // than to infinity.
+        assert_eq!(ray_gate(0.0), 0.01);
+        assert_eq!(ray_gate(f64::NAN), 0.01);
     }
 }

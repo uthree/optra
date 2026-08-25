@@ -40,7 +40,7 @@ use super::bones::{BoneMeter, MeasureOptions, Skeleton};
 use super::filter::{Filtered, PoseFilter};
 use super::fit::{Fitted, Fitter};
 use super::floor::FloorMeter;
-use super::fuse::{Pose3d, Tally, fuse};
+use super::fuse::{FuseOptions, Pose3d, Tally, fuse, ray_gate};
 use super::head::HeadMeter;
 use super::settle::Settling;
 use super::shake::{Shake, ShakeMeter, drives_a_tracker};
@@ -123,6 +123,13 @@ pub struct FusionStats {
     /// How much worse the cameras agreed than their keypoints claimed, as a
     /// multiplier already applied to every joint.s uncertainty. One is perfect.
     pub disagreement: f64,
+    /// The angular gate a ray has to pass to count, in radians.
+    ///
+    /// Beside the disagreement because they are the two halves of one
+    /// sentence: this is how close the rays were asked to come, and that is
+    /// how close they came. A gate tighter than the calibration behind it
+    /// rejects honest rays, and the panel is where that becomes visible.
+    pub gate: f64,
     pub cameras: Vec<CameraContribution>,
     /// The body measurement as it stands.
     pub body: Skeleton,
@@ -266,8 +273,11 @@ impl Fusion {
         self.channel = Some(channel.clone());
 
         let config = config.clone();
+        // Read off the profile that is about to be used, so a room solved to a
+        // degree and a room solved to a tenth of one are not judged alike.
+        let gate = ray_gate(room.rms);
         supervisor.spawn("fusion", move |global| {
-            run(channel, config, tracked, body, vr, global)
+            run(channel, config, gate, tracked, body, vr, global)
         });
 
         Ok(())
@@ -474,19 +484,28 @@ fn admit(tracked: &mut [Tracked], now: Instant, ceiling: Duration, slack: Durati
 fn run(
     channel: Arc<FusionChannel>,
     config: FusionConfig,
+    // Angular gate for calling a ray an outlier, in radians, from the room.
+    gate: f64,
     mut tracked: Vec<Tracked>,
     body: Skeleton,
     vr: Option<Arc<VrChannel>>,
     global: Shutdown,
 ) {
-    tracing::info!(cameras = tracked.len(), "fusion started");
+    tracing::info!(
+        cameras = tracked.len(),
+        gate_degrees = gate.to_degrees(),
+        "fusion started"
+    );
 
     // How far behind real time the clock runs, followed rather than fixed. It
     // starts at the margin and grows to whatever the cameras turn out to need.
     let mut lag = Duration::from_millis(config.align_slack_ms as u64);
     let period = 1.0 / f64::from(config.rate_hz.max(1));
 
-    let fuse_options = config.fuse_options();
+    let fuse_options = FuseOptions {
+        inlier_threshold: gate,
+        ..config.fuse_options()
+    };
     let measure_options = MeasureOptions::default();
 
     let mut meter = BoneMeter::new(measure_options.clone());
@@ -597,6 +616,7 @@ fn run(
         publish(
             &channel,
             &config,
+            gate,
             &mut tracked,
             &raw,
             &fitted,
@@ -630,6 +650,7 @@ fn run(
 fn publish(
     channel: &FusionChannel,
     config: &FusionConfig,
+    gate: f64,
     tracked: &mut [Tracked],
     raw: &Pose3d,
     fitted: &Fitted,
@@ -694,6 +715,7 @@ fn publish(
     }
     // Smoothed here rather than in the fuse, which has no memory: it is a
     // property of the room and should not be seen to twitch.
+    stats.gate = gate;
     stats.disagreement = if stats.disagreement > 0.0 {
         f64::from(ema(
             stats.disagreement as f32,
