@@ -105,6 +105,12 @@ wrong, and quietly compensating here would leave the user with a working Optra
 and a broken SteamVR -- every other application on the machine would still put
 them underground.
 
+The same argument applies to the other two axes and is stronger there, because
+the headset is a better witness than the ground. See section 9.7: the cameras
+have an opinion about where the user's head is and the headset knows, and the
+difference between them is the total error of everything in between. The floor
+check came first and is the narrower of the two.
+
 Optra also sends `/tracking/trackers/head/{position,rotation}` from the live HMD
 pose so VRChat can align its own space to ours instead of relying on the user to
 nail the in-game calibration pose.
@@ -202,6 +208,7 @@ src/
     fit.rs           bone-length and anatomy constrained fit
     filter.rs        constant-velocity Kalman + One Euro, and prediction
     floor.rs         checking SteamVR's floor against where the feet land
+    head.rs          checking the whole room against where the headset is
     shake.rs         how much each stage is moving that a body could not
     stage.rs         the fusion thread that runs all of the above
   output/
@@ -1147,6 +1154,44 @@ barely moves, because it is placed from a skeleton. The row read `cameras 184
 mm, fit 0, smoothed 0, sent 0`, which reads as the fit having cured everything
 and was nothing of the kind. Four numbers about four different populations are
 not comparable, and comparing them is the entire purpose of the row.
+
+### 9.7 Checking the room against the headset
+
+The floor check in section 4 watches one number the application takes on trust. This
+watches all three, and it is the sharper instrument: the headset reports its own
+position continuously and to a millimetre, and the cameras have their own
+opinion about where the user's head is. The difference between the two answers
+is the total error of everything in between — the camera calibration, the lens
+models, the room transform, the pose models, and the clock they are aligned on.
+
+It is not circular, though the cameras were solved from this same headset. A
+calibration is solved once, from one walk, over whatever part of the room the
+user happened to cover. This asks again afterwards, continuously, wherever they
+are standing now. A camera that has been knocked, a room profile loaded for the
+wrong setup, and a solve that converged on the wrong scale all look perfect from
+the inside and all show up here.
+
+Kept as a vector rather than a distance, because the direction is most of the
+diagnosis: an offset that is nearly all vertical is a room setup run at the
+wrong height, and one that points anywhere else is the calibration itself. The
+headset sits in front of the face and above the ears, so no offset is
+subtracted and none is expected to be zero — the question is not whether these
+are the same point but whether they are a head apart or a room apart. Median per
+axis over a few seconds, from the raw reconstruction and only from a head
+keypoint the cameras actually placed, so neither one bad frame nor the fit's own
+guess becomes the verdict.
+
+Like the floor, it reports and does not correct. A head half a metre from the
+headset does not mean the trackers should be moved half a metre; it means the
+room profile is wrong and everything built on it is untrustworthy, including
+whatever correction would have been applied.
+
+**The warning order follows from this.** The head check goes first, because
+every other number on the panel is expressed in the frame it says is wrong. The
+joint tally comes next. The floor claim goes below both, because a confident
+statement about SteamVR's room setup derived from two measured joints out of
+twenty-six is worse than silence — that is exactly what it was doing, reporting
+forty-two centimetres from a body that was five-sixths invented.
 
 
 ## 10. Tracker pose derivation
