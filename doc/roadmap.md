@@ -12,7 +12,7 @@ these steps build toward.
 | M3 - VR link and calibration | done, pending a room |
 | M4 - Fusion | done, pending a room |
 | M5 - Tracker output | done, pending a consumer |
-| M6 - Tuning and release | |
+| M6 - Tuning and release | in progress |
 
 ## M0 - Project skeleton
 
@@ -286,6 +286,9 @@ been told the healthy value of is not a diagnostic.
 
 ## M6 - Tuning and release
 
+- A way to measure accuracy without a room, so that a change to a model or to
+  the chain can be judged before anyone puts cameras on a ceiling. Done; see
+  section 14 of [design.md](design.md).
 - Room profile management, multiple named profiles.
 - Startup self-check: cameras present, calibration loaded, models available.
 - Performance pass: allocation reuse in the hot path, preview downscaling,
@@ -296,6 +299,44 @@ been told the healthy value of is not a diagnostic.
 
 **Done when:** a fresh install can be taken from download to working full-body
 tracking using only the in-app documentation.
+
+The harness came first because every other test in the project begins after
+inference. `sim` renders a walking figure in a tiled room from four unlike
+ceiling cameras and `tests/accuracy.rs` runs the real detector and the real pose
+model over those frames, then the real triangulation, fit and filter. The figure
+is forward kinematics from stated bone lengths, so the answer is known exactly.
+
+First numbers, over a seven second walk: a person found in all 560 camera
+frames, the lower body 2.9 cm from the truth with 1.8 cm of spread once the
+model's own labelling offset is taken out, against 0.5 cm from perfectly
+projected keypoints. The gap between those is what inference contributes, and
+it had never been possible to look at.
+
+Four things came out of building it:
+
+- **A pose model's joints are where its training set was annotated, not where
+  the bone is.** Halpe's hip-to-neck measures six centimetres longer than the
+  body it was drawn from, every frame, with almost no scatter. That is a
+  convention rather than an error, and the per-tracker offsets already in the
+  output stage are what absorb it — but a report that added it into one error
+  figure would have made a well-behaved model look four times worse than it is.
+  The harness reports the constant part and the scatter separately.
+- **The hips come back mirrored on about seven per cent of ticks.** A foot
+  tracker on the wrong foot is a specific failure with a name, and a mean would
+  have buried it in a tail.
+- **Rendering has to be deterministic to be worth asserting on.** The renderer
+  is a software rasteriser rather than the GPU already in the process, because a
+  threshold tight enough to be useful would otherwise fail on somebody else's
+  driver.
+- **The simulation was wrong first.** The bone meter reported forty per cent
+  scatter on ankle-to-heel and refused to name a length, correctly: the foot was
+  hung off the floor rather than off the ankle, so it stretched every time the
+  ankle lifted, and the two feet were drawn to different lengths. Every foot
+  number would have been measured against that.
+
+What it cannot do is predict a real room. The figure is a rendered
+approximation and real skin, fabric, motion blur and lighting are all absent.
+These numbers are a floor and a regression detector.
 
 ## Deferred
 

@@ -180,7 +180,7 @@ src/
   capture/           capture threads, mailboxes, per-camera statistics
     source/          frame sources and device property sessions
       webcam.rs      Media Foundation capture via nokhwa
-      synthetic.rs   generated scene, for developing without hardware
+      synthetic.rs   the simulated room, for developing without hardware
       controls.rs    exposure, gain and friends through DirectShow
   infer/             ort session management, EP setup, batching, scheduling
     traits.rs        Detector / Pose2d / MultiPose2d, PoseSource
@@ -217,6 +217,12 @@ src/
     vrchat.rs        VRChat's OSC tracker input, and the Unity conversion
     vmt.rs           VirtualMotionTracker's virtual SteamVR devices
     stage.rs         the send thread that runs all of the above
+  sim/               a simulated room, rendered, with the answer known
+    body.rs          anatomy, a walk, and the ground truth it produces
+    figure.rs        a surface hung on that body
+    mesh.rs          triangles, and the shapes a room and a person need
+    room.rs          the room, and where the cameras hang in it
+    render.rs        a deterministic software rasteriser, see section 14
 ```
 
 ## 6. Capture
@@ -1514,11 +1520,174 @@ Camera identity is keyed on the device path so that USB re-enumeration does not
 silently swap two cameras and invalidate a calibration. When a configured camera
 is missing, Optra reports it instead of falling back to an arbitrary device.
 
-## 14. Risks and mitigations
+## 14. Measuring accuracy without a room
+
+Every test in this project used to begin after inference. The fusion tests
+project a known body into each camera and ask what the chain downstream does
+with perfect keypoints; that is the right question for the fusion stage, and it
+leaves the question that actually decides whether the application works
+unanswered. Given a *picture* of a person, how far out is the knee that comes
+back?
+
+Nothing could answer it, because answering it needs a room, four cameras, a
+headset, and a person willing to walk in circles while somebody reads numbers
+off a screen. The pieces the answer depends on — a detector deciding where a
+person is, a pose model deciding where their knee is inside that box — are also
+the pieces most likely to be wrong and the ones this project has the least
+control over.
+
+So `sim` builds a room and puts a walking figure in it, and `tests/accuracy.rs`
+runs the real models over the rendered frames.
+
+### 14.1 One source for the picture and the answer
+
+The figure is forward kinematics from stated bone lengths. Every bone is exactly
+its own length at every instant, and the same joint positions that place the
+mesh are the ground truth a reconstruction is scored against. There is no second
+opinion about where a hip is, because there is only one hip.
+
+That rules out an imported rigged model, which was the obvious alternative. A
+model file arrives with its own skeleton, its own bind pose and its own idea of
+which vertex is the knee, and using one would mean writing a retarget and then
+trusting it — a third thing to be wrong, sitting exactly where the measurement
+is taken.
+
+The constraint earns its keep immediately. The bone meter reported forty per
+cent scatter on ankle-to-heel and refused to name a length for it, correctly: the
+foot was being placed relative to the floor under the ankle rather than relative
+to the ankle, so it stretched every time the ankle lifted, and the left and right
+feet were drawn to different lengths. A body whose feet change size is not a body
+any reconstruction could reproduce, and every foot-tracker number measured
+against it would have been measuring the simulation's mistake.
+
+### 14.2 Why the rendering is done on the CPU
+
+There is a GPU in the process already, and eframe brings wgpu with it. The
+renderer is a software rasteriser anyway.
+
+A test that asserts a figure in millimetres has to see the same pixels on every
+machine that runs it. A GPU render depends on the driver, the vendor and
+whichever adapter happened to be picked, and a threshold tight enough to be
+worth having would then fail on somebody's laptop for reasons that have nothing
+to do with the code. Everything in `sim::render` is `f64` arithmetic in a fixed
+order, with no threads and no clock, so the same scene renders to the same bytes
+everywhere.
+
+It also projects through `geometry::camera::Camera` rather than through a
+projection matrix of its own, lens distortion included. The pixels a model looks
+at and the ground truth the harness compares against then come from one piece of
+code. A renderer with its own idea of the lens would let a distortion bug be
+present at both ends and cancel, which is the one failure a synthetic test is
+uniquely good at hiding.
+
+Three faults surfaced during the build, and all three are specific to the
+geometry this project actually has:
+
+- **The frame a normal is in is not the frame the viewer is in.** Turning a
+  world-space normal to face a camera-space view direction compares two
+  different things, and it is worst for the surface a camera looks most nearly
+  square-on at. The floor of a room seen from its ceiling flipped away from the
+  light and the whole room rendered in ambient alone — dark enough that a
+  detector has nothing to separate a person from.
+- **A distortion polynomial is only a lens inside its own range.** Cutting a
+  triangle at the near plane leaves vertices against the camera and arbitrarily
+  far off-axis, where `1 + k1 r^2` goes negative and folds the point back
+  through the middle of the image. It lands in front of the scene at a depth
+  taken from a surface behind the camera, and the symptom is a wall painted over
+  the subject — on the cameras that have any distortion at all, and only on
+  those. The clip volume has sides as well as a near plane now.
+- **A ceiling camera aimed at the middle of a body loses the feet.** It is
+  already looking down, so aiming at chest height pushes the feet of anybody
+  standing near it out of the bottom of the frame. Everything above the waist is
+  redundant across four cameras and the feet are not. The simulated cameras aim
+  at knee height, and so should real ones.
+
+### 14.3 The camera set
+
+Four cameras, deliberately unalike: three resolutions, four fields of view, one
+with a perfect lens and three with barrel distortion. A set of identical cameras
+hides every bug that comes from mixing them, and mixing them is the normal case
+for a user assembling a rig out of whatever webcams they own.
+
+The distortion is derived rather than chosen. `r + k1 r^3` stops rising at
+`r = sqrt(-1/(3 k1))`; past that peak two directions land on the same pixel and
+pixels beyond it have no ray at all — not a strong lens but a polynomial outside
+its range, where `Camera::ray` returns nonsense. A wide camera reaches a large
+normalised radius at its own frame corner, so **the wider the camera the less
+distortion it can carry** before its corners fall off the far side of that peak.
+Each simulated lens takes a fixed fraction of that limit, which makes any
+resolution and any field of view produce a lens the model can represent.
+
+That is not a quirk of the simulation. It is the reason section 6 has a separate
+equidistant model for anything past roughly 120 degrees: the radial model does
+not merely become inaccurate there, it stops being invertible.
+
+### 14.4 What the report separates
+
+A single error figure would run four different things together, so the harness
+reports them apart.
+
+- **Pixels.** How far each camera's keypoint is from where that joint really
+  projects, in pixels and in angle. This is the pose model and nothing else. The
+  angle is the comparison that means the same thing on a 480p wide camera and a
+  1080p narrow one, for the same reason the triangulation weights are angular.
+- **Bias.** The part of the 3D error that is constant in the walking body's own
+  frame. A pose model's joints are where its training set was annotated, and
+  that is not where the bone is: Halpe's "head" is not the centre of a skull and
+  its "neck" is not the top of a spine. That shows up as several centimetres in
+  a fixed direction, every frame, and it is a labelling convention rather than a
+  failure. The per-tracker offsets in section 11 are what exist to absorb it.
+- **Spread.** What is left once the bias is removed. Nothing downstream can
+  absorb it, so it is what the assertions are written against.
+- **Swaps.** Ticks where a joint came back nearer to its mirror image than to
+  itself. A foot tracker on the wrong foot is not a slightly worse foot tracker,
+  and averaging that into a tail would hide it.
+
+Bone lengths are reported alongside, against the lengths that were drawn,
+because a body reconstructed to the wrong size is the one error a set of cameras
+cannot detect about itself — see section 9.7.
+
+### 14.5 What it says so far
+
+Over a seven-second walk in front of four cameras, with YOLOX-tiny and
+RTMPose-m-Halpe26:
+
+| | median | p95 |
+|---|---|---|
+| Lower body, from the truth | 2.9 cm | 7.0 cm |
+| Lower body, spread alone | 1.8 cm | 6.7 cm |
+| The same from perfect keypoints | 0.5 cm | 0.9 cm |
+
+A person was found in all 560 camera frames. The gap between the last row and
+the first two *is* the contribution of inference, which is the thing that could
+not previously be looked at.
+
+Two findings came straight off the table. The hips come back mirrored on about
+seven per cent of ticks — a specific, nameable failure that a mean would have
+buried in a tail. And `hip`-to-`neck` measures six centimetres longer than it was
+drawn, with almost no scatter, which is the labelling convention rather than an
+error: the model's neck is not where this document's neck is.
+
+### 14.6 What it does not answer
+
+The figure is a rendered approximation of a person, not a person. Real skin,
+real fabric, real motion blur, real lighting and real backgrounds are all
+absent, and a pose model's behaviour on them is not measured here. The detector
+used is trained on HumanArt, which includes rendered humans, and that is part of
+why it fires on this figure at all — a detector trained only on photographs
+might do worse on the simulation than it does in a real room.
+
+So these numbers are a floor and a regression detector, not a prediction. What
+they can say is that a change made the chain worse, that a joint is being placed
+on the wrong limb, and that the geometry between a pixel and a metre is right.
+What they cannot say is what a real room will measure. That still needs a real
+room.
+
+## 15. Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Pose models are trained mostly on eye-level views; steep ceiling angles are out of distribution. | Degraded keypoint accuracy, especially for feet. | Recommend mounting at roughly 30-45 degrees rather than straight down; top-down crops normalize scale; allow per-camera image rotation; the model panel lets users A/B models in their own room. |
+| Pose models are trained mostly on eye-level views; steep ceiling angles are out of distribution. | Degraded keypoint accuracy, especially for feet. | Recommend mounting at roughly 30-45 degrees rather than straight down; top-down crops normalize scale; allow per-camera image rotation; the model panel lets users A/B models in their own room. The harness in section 14 puts a number on it from a ceiling angle without needing a room, which is what turns "worse, probably" into something a model change can be judged against. |
 | USB bandwidth with 4 cameras. | Dropped frames, broken sync. | Per-camera measured-FPS display, MJPEG default, explicit guidance to spread cameras across root controllers. |
 | Unsynchronized shutters. | Triangulation error during fast motion. | Per-camera latency estimation plus interpolation to a common clock; motion-blur warning. |
 | Head-keypoint offset unobservable if the user does not rotate their head during calibration. | Bad extrinsics. | Wizard detects the degenerate case and requests more variety. |
