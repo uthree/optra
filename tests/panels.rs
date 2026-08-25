@@ -262,6 +262,7 @@ fn tracked_fusion() -> Fusion {
                 point,
                 velocity: Vector3::new(0.0, 0.0, -0.8),
                 predicted: point + Vector3::new(0.0, 0.0, -0.05),
+                lead: 0.06,
                 sigma,
                 inferred: joint == Joint::LeftKnee,
             },

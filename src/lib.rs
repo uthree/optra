@@ -12,6 +12,7 @@ pub mod geometry;
 pub mod infer;
 pub mod logging;
 pub mod models;
+pub mod output;
 pub mod paths;
 pub mod pipeline;
 pub mod vr;

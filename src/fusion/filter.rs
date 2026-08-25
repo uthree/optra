@@ -108,6 +108,14 @@ pub struct FilteredJoint {
     /// Where the joint is expected to be one horizon from now. This is what
     /// goes out to the trackers.
     pub predicted: Point3<f64>,
+    /// How far past the pose's own instant `predicted` looks, in seconds.
+    ///
+    /// Not the same as the configured horizon: the smoothing lag being paid
+    /// back is added to it, and that varies with how fast this particular joint
+    /// is moving. The output stage sends faster than fusion runs and has to
+    /// extrapolate the rest of the way itself, which it cannot do without
+    /// knowing which instant it is extrapolating *from*.
+    pub lead: f64,
     /// Uncertainty the measurement came in with, in metres.
     pub sigma: f64,
     /// True when the fit placed this joint rather than the cameras seeing it.
@@ -118,6 +126,24 @@ impl FilteredJoint {
     pub fn speed(&self) -> f64 {
         self.velocity.norm()
     }
+
+    /// Where this joint is expected to be `ahead` seconds past the pose's own
+    /// instant, extrapolating no further than `limit` metres.
+    ///
+    /// The limit is measured from the smoothed position rather than added to
+    /// each step, so extrapolating twice as far never travels twice as far
+    /// wrong. A velocity estimate that has gone bad should show as a joint
+    /// that stopped tracking, not as one that left the room.
+    pub fn extrapolate(&self, ahead: f64, limit: f64) -> Point3<f64> {
+        let step = self.velocity * ahead;
+        let distance = step.norm();
+        let step = if distance > limit {
+            step * (limit / distance)
+        } else {
+            step
+        };
+        self.point + step
+    }
 }
 
 /// A whole body, filtered and predicted.
@@ -125,8 +151,13 @@ impl FilteredJoint {
 pub struct Filtered {
     /// The instant the measurements describe.
     pub at: Instant,
-    /// How far ahead `predicted` looks.
+    /// How far ahead the prediction was asked to look. Each joint's own `lead`
+    /// is this plus the smoothing lag it is owed.
     pub horizon: Duration,
+    /// How far any joint may be extrapolated from where it was measured, in
+    /// metres. Carried here so that a stage predicting further can apply the
+    /// same bound rather than inventing its own.
+    pub limit: f64,
     joints: Vec<Option<FilteredJoint>>,
 }
 
@@ -135,6 +166,7 @@ impl Filtered {
         Self {
             at,
             horizon,
+            limit: FilterOptions::default().max_prediction,
             joints: (0..Joint::ALL.len()).map(|_| None).collect(),
         }
     }
@@ -204,6 +236,7 @@ impl PoseFilter {
         }
 
         let mut out = Filtered::empty(fitted.at, self.options.horizon);
+        out.limit = self.options.max_prediction;
 
         for joint in Joint::ALL {
             let slot = &mut self.tracks[joint.index()];
@@ -310,21 +343,18 @@ impl Track {
         // then lands where the joint will be, and the smoothing costs nothing in
         // latency — only in how quickly the output can follow a real change of
         // direction.
-        let step = velocity * (options.horizon.as_secs_f64() + tau);
-        let distance = step.norm();
-        let step = if distance > options.max_prediction {
-            step * (options.max_prediction / distance)
-        } else {
-            step
-        };
+        let lead = options.horizon.as_secs_f64() + tau;
 
-        FilteredJoint {
+        let mut filtered = FilteredJoint {
             point: self.smoothed,
             velocity,
-            predicted: self.smoothed + step,
+            predicted: self.smoothed,
+            lead,
             sigma,
             inferred,
-        }
+        };
+        filtered.predicted = filtered.extrapolate(lead, options.max_prediction);
+        filtered
     }
 }
 
