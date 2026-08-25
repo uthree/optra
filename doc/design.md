@@ -202,8 +202,12 @@ src/
     filter.rs        constant-velocity Kalman + One Euro, and prediction
     floor.rs         checking SteamVR's floor against where the feet land
     stage.rs         the fusion thread that runs all of the above
-  ik/                joint positions -> tracker position + orientation
-  output/            TrackerSink trait, vrchat_osc.rs, vmt.rs
+  output/
+    pose.rs          joint positions -> tracker position + orientation
+    sink.rs          the TrackerSink trait and tracker index assignment
+    vrchat.rs        VRChat's OSC tracker input, and the Unity conversion
+    vmt.rs           VirtualMotionTracker's virtual SteamVR devices
+    stage.rs         the send thread that runs all of the above
 ```
 
 ## 6. Capture
@@ -951,45 +955,151 @@ predicted horizon is configurable and displayed live.
 
 ## 10. Tracker pose derivation
 
-Positions are taken from the fitted skeleton; orientations are built from limb
-frames:
+A tracker is a rigid body. The reconstruction is not: it is a set of
+independent points, each with its own uncertainty and no orientation at all. So
+every rotation Optra sends is inferred from two or three joint positions, and a
+tracker's real quality is that of the *worst* joint in the limb it was built
+from rather than of the joint it is named after.
 
-- **Hips**: forward from the hip-midpoint-to-spine axis crossed with the
-  left-right hip axis; up along the spine.
-- **Chest**: spine axis with shoulder line as the reference right vector.
+That is worth stating plainly because of what it implies about feet. A foot's
+yaw comes from the line between heel and toe — twenty centimetres apart, both
+at the far end of the body from the cameras, both frequently hidden by the
+other leg. Two centimetres of error in either is six degrees of yaw. It is the
+reason a WholeBody model is the default.
+
+Positions come from the fitted skeleton; orientations from limb frames, built
+by orthonormalising an up axis against a rough reference right:
+
+- **Hips**: up along the spine, right across the hips.
+- **Chest**: spine axis with the shoulder line as reference right, positioned
+  three quarters of the way up the spine. The sternum rather than the
+  collarbone — a chest tracker at the neck makes an avatar's upper body pivot
+  about the wrong point — and there is no keypoint there to use instead.
 - **Knees**: thigh direction as up, bend plane normal as right.
-- **Feet**: heel-to-toe as forward, ankle-to-knee as up. This is why a
-  WholeBody model is the default; with a COCO-17 model there are no toe or heel
-  keypoints and foot yaw must fall back to the shin direction plus a hip-yaw
-  heuristic, which is noticeably worse.
+- **Feet**: heel-to-toe as forward, ankle-to-knee as up.
 - **Elbows**: upper-arm direction with the elbow bend plane.
 
-Enabled trackers, their index assignment, and per-tracker offsets are part of
-the room profile.
+Knees and elbows are the same three points and the same cross product, and the
+normal that comes out of it points opposite ways for the two of them: the
+kneecap is on the front of the body and the point of the elbow is on the back.
+Both trackers still have to face forwards, so which way the hinge closes is
+named in the code rather than left to a sign nobody would question.
+
+Two fallbacks matter more than they look. A straight limb has no bend plane —
+the segments are collinear and their cross product is noise — and a straight
+knee is the *normal* case, not the exception, for anybody standing still. A
+foot from a COCO-17 model has neither heel nor toe. Both fall back to the hip
+axis, which is a real loss for the foot: it is the difference between a foot
+that turns and a foot welded to the pelvis. It is still better than a yaw taken
+from the shin, which barely moves when the foot does.
+
+A limb that cannot be derived at all is left out of the frame rather than sent
+with an identity rotation. A foot on the floor pointing north looks like
+tracking, and leaves the user working out which part of the system is lying.
+
+Enabled trackers and their per-tracker offsets are application settings rather
+than part of the room profile: a user with two rooms wants the same trackers in
+both, and the offsets describe their body, not their furniture. Indices are
+assigned one-based and contiguous over the enabled set in a fixed role order.
+Contiguous because a consumer handed trackers 1, 5 and 6 with nothing between
+them is being asked to cope with something no other tracking system produces.
+What the assignment does not depend on is what happens to be *visible*: a knee
+that drops out for a moment must not renumber the feet behind it.
 
 ## 11. Output
 
 ```rust
 pub trait TrackerSink: Send {
     fn name(&self) -> &str;
+    fn target(&self) -> String;
     fn send(&mut self, frame: &TrackerFrame) -> Result<()>;
+    fn close(&mut self) -> Result<()>;
 }
 ```
 
-`TrackerFrame` carries a timestamp and a list of `(TrackerRole, Isometry3<f64>,
-confidence)` in world frame `W`. Each sink applies its own coordinate
-conversion.
+A `TrackerFrame` carries an instant, the trackers that could be built, the ones
+that have been missing long enough to call lost, and the headset pose. Every
+pose in it is in Optra's world frame — the OpenVR standing universe — and each
+sink owns its own conversion, because what a consumer wants is that consumer's
+business and not something to be negotiated upstream.
 
-- **VRChat OSC** (`vrchat_osc.rs`): sends `/tracking/trackers/{1..8}/position`
-  and `/rotation` as three floats each, plus the head reference. Default target
-  `127.0.0.1:9000`, configurable for a networked setup.
-- **VMT** (`vmt.rs`): drives VirtualMotionTracker's virtual SteamVR devices over
-  OSC on its own port, one message per tracker per frame, with quaternion
-  orientation and VMT's time-offset field set from our prediction horizon.
+- **VRChat OSC** (`vrchat.rs`): `/tracking/trackers/{1..8}/position` and
+  `/rotation` as three floats each, plus the head reference on
+  `/tracking/trackers/head/...`. Default target `127.0.0.1:9000`. The head is
+  not optional in practice — VRChat places the trackers relative to it — and it
+  is the same headset pose the cameras were calibrated against, so sending it
+  makes the two agree by construction.
+- **VMT** (`vmt.rs`): `/VMT/Room/Driver`, one message per device per frame,
+  with a quaternion and VMT's time-offset field. Default target
+  `127.0.0.1:39570`.
 
-The send rate is decoupled from the fusion rate: the output thread runs at a
-configurable rate (default 90 Hz) and re-predicts from the latest filter state
-on every send.
+### 11.1 The two coordinate conversions
+
+VRChat's is the interesting one. Unity is left-handed with +Z forward where the
+standing universe is right-handed with -Z forward, so positions mirror in Z.
+Mirroring an axis conjugates a rotation, and mirroring Z leaves rotation *about*
+Z alone while reversing rotation about X and Y — so the quaternion's x and y
+components negate and its z does not. The Euler angles that come out then have
+to be Unity's own convention, intrinsic Z then X then Y, because that is what
+`Transform.eulerAngles` means at the other end. None of this is negotiable and
+all of it is silently wrong-looking rather than obviously broken, so it is
+tested by round-tripping arbitrary rotations rather than only the three
+cardinal turns.
+
+VMT needs no conversion at all: driver coordinates *are* this frame. That is
+worth saying out loud, because it means a bug appearing in only one of the two
+backends is a bug in a conversion, and `vmt.rs` has none to blame.
+
+What VMT does need is the room matrix. It places devices in the runtime's
+*raw* space, which differs from the standing universe by whatever SteamVR's
+room setup did — that is the floor height and the play-space centre, which is
+precisely what a user would notice being wrong. VMT keeps that transform as a
+setting of its own. Optra can read the true one from OpenVR's
+`GetRawZeroPoseToStandingAbsoluteTrackingPose`, invert it, and send it as a
+*temporary* room matrix, which saves configuring the same thing twice without
+making a permanent change to another application's settings.
+
+### 11.2 The send loop
+
+The send rate is decoupled from the fusion rate and higher: 90 Hz by default
+against fusion's 60. This is not padding. Every send predicts from the same
+filter state but to a later instant, so the poses genuinely advance between
+them and the consumer's own render loop gets an answer closer to the moment it
+asked. What it cannot do is invent detail — a body fusion has not seen move is
+a body extrapolated along a straight line, and the further this loop runs ahead
+of the last reconstruction the more that is all it is doing.
+
+How far ahead it predicts is not a fixed horizon. A reconstruction describes an
+instant already some way in the past, because the fusion clock deliberately
+runs behind so that every camera has delivered, and that distance is *measured*
+rather than configured. The configured horizon is only the part Optra cannot
+see: the hop out and whatever the consumer does before it draws. So a setting
+that used to have to be kept in step with the camera setup no longer does.
+
+A tracker missing for a single frame is sent nothing, which leaves the consumer
+holding the last pose — correct for the fraction of a second an occlusion
+lasts. One missing for half a second is *switched off* where the protocol
+allows it, because holding a pose past that puts a foot on a floor the user is
+no longer standing on. Closing the stage switches every device off, so a user
+who quits Optra to fix something is not left looking at trackers that appear to
+still be working.
+
+Everything the loop needs is fixed when it is built — the socket, the tracker
+numbering, the clock — so a settings change is a restart rather than an
+adjustment. The shell stops a stale stage as soon as it notices and starts the
+new one once the settings have held still for half a second, which covers a
+slider being dragged without leaving the old socket sending in the meantime.
+
+### 11.3 Testing something on the other side of a socket
+
+Everything downstream is somebody else's process, and there is nothing on a
+build machine to test against. What can be tested is that the bytes leaving
+Optra say what this project believes they should say, so `tests/output.rs`
+sends to a real loopback socket and decodes what arrived rather than inspecting
+a sink's own idea of what it did. That covers the chain end to end: a walking
+body through prediction, limb frames, coordinate conversion and OSC encoding,
+checked as three trackers and a head at plausible heights, in degrees, with
+forward pointing the right way.
 
 ## 12. User interface
 

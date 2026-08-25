@@ -11,7 +11,7 @@ these steps build toward.
 | M2 - Inference | done |
 | M3 - VR link and calibration | done, pending a room |
 | M4 - Fusion | done, pending a room |
-| M5 - Tracker output | |
+| M5 - Tracker output | done, pending a consumer |
 | M6 - Tuning and release | |
 
 ## M0 - Project skeleton
@@ -207,6 +207,27 @@ What is left is the same thing M3 is waiting on: a real room.
 
 **Done when:** VRChat full-body tracking works end to end with hips and both
 feet, and the same session works through VMT under SteamVR.
+
+Three things came out of building it, all recorded in
+[design.md](design.md):
+
+- **A knee and an elbow need opposite signs.** They are the same three points
+  and the same cross product, and the bend plane normal points forwards for one
+  and backwards for the other, because the kneecap is on the front of the body
+  and the point of the elbow is on the back. Caught by a test, not by reading.
+- **The prediction horizon should never have been a camera setting.** The
+  distance from a frame being exposed to a reconstruction existing is measured
+  by the fusion stage. Only the hop out and the consumer's own delay are
+  unknowable from here, so that is all the setting covers now, and its default
+  dropped from 60 ms to 20.
+- **The fallbacks are the common case, not the exception.** A straight knee has
+  no bend plane and a standing person's knees are straight; a foot without heel
+  and toe keypoints has no yaw of its own. Both fall back to the hip axis.
+
+Untested against a real consumer: everything downstream is another process, so
+the tests send to a loopback socket and decode what arrived. The conversions
+they check are the ones this project believes are right, which is not the same
+as the ones VRChat implements.
 
 ## M6 - Tuning and release
 
