@@ -287,6 +287,30 @@ impl TrackingPanel {
                 );
             });
         }
+
+        // The one measurement nothing else here can make. A uniformly scaled
+        // set of cameras agrees with itself perfectly — every ray still meets
+        // every other ray and every reprojection residual is still zero — so
+        // the wizard's RMS is happy and the agreement factor reads 1.0 while
+        // the body comes out two-thirds life size. It takes an external metre
+        // rule, and the headset is one. Measured by moving, not by standing.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Room scale").weak());
+            match stats.scale {
+                Some(scale) => ui.colored_label(
+                    if (scale - 1.0).abs() <= 0.05 {
+                        GOOD
+                    } else if (scale - 1.0).abs() <= 0.10 {
+                        FAIR
+                    } else {
+                        BAD
+                    },
+                    format!("{scale:.2}\u{00d7} life size"),
+                ),
+                None => ui.label(RichText::new("walk about to measure it").weak()),
+            };
+        });
+
         // Reported next to the rate rather than buried in a section, because it
         // invalidates everything else on the panel. The cameras watching the
         // feet are an independent measurement of a quantity the rest of the

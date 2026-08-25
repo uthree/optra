@@ -121,6 +121,12 @@ pub struct FusionStats {
     /// millimetre. A head is about a fifth of a metre across, so anything much
     /// past that is the room profile rather than the keypoint.
     pub head: Option<Vector3<f64>>,
+    /// How large the room is reconstructed, as a multiple of life size.
+    ///
+    /// None until the user has moved: standing still measures one noise floor
+    /// against another. Nothing else in the application can see this at all —
+    /// a uniformly scaled set of cameras agrees with itself perfectly.
+    pub scale: Option<f64>,
     pub measuring: bool,
     pub warning: Option<String>,
 }
@@ -573,6 +579,7 @@ fn run(
             &measure_options,
             floor.estimate(),
             head.estimate(),
+            head.scale(),
             shaking.shake(),
             rate.tick(now),
             lag,
@@ -605,6 +612,7 @@ fn publish(
     measure: &MeasureOptions,
     floor: Option<f64>,
     head: Option<Vector3<f64>>,
+    scale: Option<f64>,
     shake: Shake,
     rate: f32,
     lag: Duration,
@@ -646,6 +654,7 @@ fn publish(
     stats.body = skeleton.clone();
     stats.floor = floor;
     stats.head = head;
+    stats.scale = scale;
     stats.shake = shake;
     // Smoothed here rather than in the fuse, which has no memory: it is a
     // property of the room and should not be seen to twitch.
@@ -678,11 +687,22 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
         ));
     }
 
-    // Ahead of everything else, because everything else is expressed in the
-    // frame this says is wrong. The headset knows where it is to a millimetre
-    // and the cameras have their own opinion; the difference is the total error
-    // of the calibration, the lens models, the room transform and the clock,
-    // and no number below it means anything while it is large.
+    // Before the offset, because a scale error produces an offset everywhere
+    // except at whatever point the scaling is about, and reporting the symptom
+    // would send the user looking for a camera that had moved.
+    if let Some(scale) = stats.scale.filter(|scale| (scale - 1.0).abs() > 0.1) {
+        return Some(format!(
+            "the cameras reconstruct your movement at {scale:.2} of life size, so the room \
+             solve has the wrong scale — re-run the calibration wizard, covering more of \
+             the floor and more height than last time"
+        ));
+    }
+
+    // Ahead of everything else below, because everything below is expressed in
+    // the frame this says is wrong. The headset knows where it is to a
+    // millimetre and the cameras have their own opinion; the difference is the
+    // total error of the calibration, the lens models, the room transform and
+    // the clock, and no number under it means anything while it is large.
     if let Some(head) = stats.head.filter(|head| head.norm() > 0.30) {
         let vertical = head.y.abs() > (head.x.abs() + head.z.abs()) * 2.0;
         return Some(format!(
@@ -691,7 +711,8 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
             if vertical {
                 ", and almost all of it is height — check SteamVR's room setup before anything here"
             } else {
-                ", so the room profile does not describe these cameras any more"
+                ", so the room profile does not describe these cameras any more; re-run the \
+                 calibration wizard"
             }
         ));
     }

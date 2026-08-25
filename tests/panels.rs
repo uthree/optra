@@ -297,6 +297,7 @@ fn tracked_fusion() -> Fusion {
         worst_correction: 0.031,
         disagreement: 2.4,
         head: Some(nalgebra::Vector3::new(0.02, -0.41, 0.05)),
+        scale: Some(0.63),
         tally: optra::fusion::fuse::Tally {
             measured: 5,
             miss: 0.28,
