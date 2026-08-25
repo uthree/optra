@@ -169,6 +169,7 @@ src/
   config/            serde types, room profiles, persistence
   app/               egui UI
     panels/          cameras, models, calibration, tracking, output, log
+      notice.rs      warnings that are allowed to change, but not quickly
     viewer3d.rs      skeleton / frusta / play-space renderer
   capture/           capture threads, mailboxes, per-camera statistics
     source/          frame sources and device property sessions
@@ -201,6 +202,7 @@ src/
     fit.rs           bone-length and anatomy constrained fit
     filter.rs        constant-velocity Kalman + One Euro, and prediction
     floor.rs         checking SteamVR's floor against where the feet land
+    shake.rs         how much each stage is moving that a body could not
     stage.rs         the fusion thread that runs all of the above
   output/
     pose.rs          joint positions -> tracker position + orientation
@@ -690,11 +692,47 @@ two samples that bracket `t - latency_i`. Cameras with no bracketing samples are
 skipped for that tick rather than extrapolated.
 
 Bracketing means the tick has to sit *behind* real time, since a frame after it
-does not exist yet. The clock therefore targets an instant an alignment lag
-back, chosen to cover one frame interval of the slowest camera. That lag is not
-a loss: the prediction step in 9.4 already has to compensate for a delay several
-times larger, and it is far better to predict forward from a properly aligned
-reconstruction than to fuse rays taken at three different instants.
+does not exist yet. That lag is not a loss: the prediction step in 9.4 already
+has to compensate for a delay several times larger, and it is far better to
+predict forward from a properly aligned reconstruction than to fuse rays taken
+at three different instants.
+
+**How far behind is measured, not configured.** The first version set it from
+the largest camera latency the calibration had measured plus a fixed margin,
+worked out once before any camera had delivered anything, and it left out the
+term that dominates: the time from a camera grabbing a frame to that frame's
+keypoints existing. That is the model, the resolution and whatever else is on
+the GPU — on a three-camera setup running a heavy pose model it was nearly two
+hundred milliseconds, against a forty-millisecond margin. So each tick measures
+how stale every camera's newest frame actually is, keeps the worst of the recent
+past with a four-second half-life, and sits behind whichever camera needs the
+most. Rising is instant and falling is slow: tightening onto one lucky moment
+would drop everybody out on the next ordinary one.
+
+**A camera is either waited for or it is not.** This is the part that matters,
+and the reason the paragraph above is not a small tuning note. A camera the
+clock does not wait for does not degrade gracefully — it has a bracketing pair
+on some ticks and not on others, so it drops in and out of the reconstruction,
+and a joint reconstructed from a different set of cameras every few ticks moves
+by the disagreement between them each time the set changes. That disagreement is
+the calibration error. It is centimetres, it arrives as a square wave between
+two different right answers rather than as noise, and no filter downstream can
+take it out. The panel had been reporting it all along as alignment fractions of
+forty-four to seventy-nine per cent; nothing read those as a fault.
+
+Waiting has to stop somewhere, and where it stops is a decision rather than a
+flicker. A camera past the ceiling is left out of the reconstruction entirely
+and says why in the Tracking panel, which is at least something a user can act
+on — move it, give it a lighter model, or raise the ceiling and accept a later
+body. The two least late cameras are always waited for however late they are:
+triangulation needs two, and the alternative to waiting is not a faster body but
+an empty room. Both directions take two seconds of agreeing before they happen,
+so a hiccup costs nothing.
+
+The clock may slow but never runs backwards. A reconstruction stamped before the
+last one hands every stage after it a negative time step, so a growing lag is
+taken up at half a tick per tick — the clock falls behind at half speed until it
+has covered the new delay, which takes a fraction of a second.
 
 A joint present in only one of the two bracketing frames — which happens
 whenever a limb crosses the pose model's confidence threshold — is taken from
@@ -777,15 +815,57 @@ change between them.
 That refinement produces the number this stage is really for. Inverting its
 normal matrix gives the position covariance in square metres, and the square
 root of its largest eigenvalue is how far the joint could be wrong along the
-direction the cameras constrain least. **This, not the reprojection residual, is
-what says whether a joint can be believed.** Two cameras a hand's width apart
-agree with each other perfectly about a point neither of them can place along
-the line of sight: the residual reports zero error and the uncertainty reports a
+direction the cameras constrain least. **This is the half of "can this joint be
+believed" that the reprojection residual cannot answer; two paragraphs down is
+the half only the residual can.** Two cameras a hand's width apart agree with
+each other perfectly about a point neither of them can place along the line of
+sight: the residual reports zero error and the uncertainty reports a
 third of a metre. A joint whose uncertainty exceeds a threshold is withheld
 rather than reported, because passing it on would only give the filter something
 confident to smooth. The claim is checked rather than asserted — a unit test
 injects noise of the size the model assumes and confirms the spread of the
 answers matches what was predicted.
+
+That covariance is a prediction of the error, though, never a measurement of
+one. It is built entirely from the noise each ray *claimed*, by way of the
+keypoint confidence the pose model attached to it, and it is wrong in a specific
+and damaging direction: three well spread rays pin a point down beautifully
+whether or not the cameras they came from agree about where anything is. A room
+calibrated to three centimetres therefore reported joints good to five
+millimetres. Everything downstream believed it — the filter weighted the
+measurement by that number and followed the disagreement as fast as it could,
+the panels printed it and told the user their cameras were excellent, and the
+two limits that exist to withhold a joint nothing can place never fired, because
+nothing ever came near them.
+
+The residuals are the missing measurement, and were computed, printed in degrees
+on a panel, and never once allowed to say anything about the answer. Scaling the
+covariance by the ratio of the two is the standard *a posteriori* variance
+factor of a least-squares adjustment:
+
+```
+factor = sum_i (residual_i / sigma_i)^2 / (2n - 3)
+sigma_reported = sigma_covariance * sqrt(max(1, factor))
+```
+
+Two constraints per ray and three unknowns in the point, hence the degrees of
+freedom. The factor is pooled over the whole body rather than computed per
+joint: per joint there is one degree of freedom with two rays and three with
+three, and the variance of such an estimate is as large as the estimate itself,
+which would swing the filter's gain about at random — a second source of shaking
+introduced by the fix for the first. Pooling is also the truer model, since how
+far apart two cameras think the room is is a property of the room and not of a
+knee. Joints whose own ratio exceeds twenty-five are left out of the pool: past
+five sigma a residual is a keypoint on the wrong limb that the inlier test let
+through, not evidence about the calibration. The factor is floored at one,
+because rays that agree better than they claimed to have been lucky rather than
+accurate, and a body's worth of joints is far too small a sample to conclude
+otherwise from.
+
+The factor is worth reporting on its own, and the Tracking panel does. It is
+measured continuously, from the user rather than from a checkerboard, and it is
+the only thing in the application that can notice a camera has been knocked
+since it was solved.
 
 **Where the cameras are is a separate question from how well they were solved,
 and it is asked separately.** A calibration can be flawless and still describe
@@ -1007,6 +1087,39 @@ Latency budget (rough, 4 cameras at 720p):
 
 Without prediction, that delay is clearly felt as foot lag when walking. The
 predicted horizon is configurable and displayed live.
+
+### 9.6 Measuring where the shaking starts
+
+"The trackers are shaking" is a complaint about the whole chain, and the chain
+is four stages long: the reconstruction can shake, the fit can shake while the
+reconstruction is calm, the smoothing can fail to remove either, and the
+prediction can put shake back into a position that was smooth. Each has a
+different cause and a different repair. The application could not tell them
+apart — the user could only report that it shook, and so could the skeleton on
+screen — which cost two rounds of guessing at the cause before this was added.
+
+The measurement is the second difference of each joint's position:
+
+```
+shake = || p(t) - 2 p(t-1) + p(t-2) ||
+```
+
+Anything moving at a constant velocity contributes exactly nothing to it, so
+walking about does not inflate the figure, while white noise of standard
+deviation `s` registers at `s * sqrt(6)`. At 60 Hz a real acceleration of five
+metres per second squared moves a joint under a millimetre between ticks and
+millimetres of jitter are worth several, which is the separation that makes it
+worth printing.
+
+The median across joints rather than the mean, so one badly seen ankle is not
+the whole body's verdict, and only over joints present three ticks running, so a
+joint that blinked does not report the gap as shake. The same meter runs at each
+of the four stages and the Tracking panel shows all four numbers in a row. Read
+left to right they say where to look: all four high is the cameras and nothing
+downstream will help; raw high and filtered low is the smoothing doing its job;
+filtered low and sent high is the prediction, which is the one stage here that
+can add movement rather than remove it.
+
 
 ## 10. Tracker pose derivation
 
@@ -1234,7 +1347,35 @@ reading it, since the scroll area around it reads the same delta once the panel
 is done. Left in place, one notch of the wheel would be spent twice: zooming
 the scene and scrolling it out from under the pointer at the same time.
 
-### 12.3 Laying panels out in tests
+### 12.3 A warning may change, but not quickly
+
+Every panel here reports what is wrong from live statistics, and live statistics
+cross their thresholds constantly: a camera on the edge of keeping up, a floor
+estimate wandering either side of six centimetres, a fit correction hovering at
+two, a device reporting an intermittent error. Each of those turned a line of
+text on and off at the repaint rate, and because a warning is a line of text,
+everything under it moved by a line of text sixty times a second. The buttons
+underneath became unclickable — a worse fault than whatever the warning was
+about, and one the user reported as such.
+
+So a notice is latched. It has to be asked for continuously for four hundred
+milliseconds before it appears, and it stays for two and a half seconds after it
+stops being asked for. The asymmetry is the point: appearing costs the user a
+line of layout, so it is worth being sure, and disappearing gives the same line
+back under a pointer that may be on its way to a button, so it is worth being
+slow. A warning that is genuinely blinking then reads as a warning that is on,
+which is also the truer description of it.
+
+The other half of the same problem is that a bare `value > limit` never settles.
+A threshold therefore has one number for the way in and a lower one for the way
+out, so a statistic sitting on the limit stays wherever it already was rather
+than reporting both answers at once.
+
+Latching the text as well as the presence is deliberate. Two warnings that
+alternate would otherwise swap the line back and forth at sixty hertz, which
+does not move the layout but is no more readable for that.
+
+### 12.4 Laying panels out in tests
 
 egui is immediate mode, so a panel that indexes past the end of a list or hands
 a widget a value it will not accept fails when it is *drawn* — and a panel

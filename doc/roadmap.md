@@ -242,6 +242,48 @@ the tests send to a loopback socket and decode what arrived. The conversions
 they check are the ones this project believes are right, which is not the same
 as the ones VRChat implements.
 
+Second run: it still shook, and the skeleton on screen shook with it — which
+ruled out the prediction and everything else past the reconstruction. Two rounds
+of guessing at a cause was one too many, so the first thing added was a way to
+tell the four stages apart: the second difference of each joint's position,
+measured at the reconstruction, the fit, the smoothing and the prediction, and
+printed as a row on the Tracking panel. Constant-velocity motion contributes
+nothing to it, so it separates shaking from walking. See section 9.6 of
+[design.md](design.md).
+
+Two faults upstream came out of looking properly, and both had been visible on
+the panel all along without being recognised:
+
+- **The fusion clock did not wait for the cameras.** Its lag was the largest
+  calibrated camera latency plus a fixed margin, worked out once before any
+  camera had delivered anything, and it left out the term that dominates: the
+  time from a camera grabbing a frame to that frame's keypoints existing, which
+  here was nearly two hundred milliseconds against a forty-millisecond margin.
+  The consequence is not a graceful loss of accuracy. A camera the clock does
+  not wait for has a bracketing pair on some ticks and not others, so it drops
+  in and out of the reconstruction, and a joint reconstructed from a different
+  set of cameras every few ticks moves by the disagreement between them each
+  time the set changes — the calibration error, centimetres, arriving as a
+  square wave rather than as noise. The panel had been reporting alignment
+  fractions of 44-79% since the milestone was written. The clock now follows
+  what the cameras actually deliver, and a camera past a ceiling is dropped
+  outright with a reason rather than flickering.
+- **The reported uncertainty was a prediction of the error, never a measurement
+  of one.** A triangulation's covariance is built entirely from the noise each
+  ray *claimed*, and three well spread rays pin a point down beautifully whether
+  or not the cameras agree about where anything is — so a room calibrated to
+  three centimetres reported joints good to five millimetres, and the filter,
+  the panels and both withholding limits all believed it. The residuals were the
+  missing measurement, computed and printed in degrees and never once allowed to
+  say anything about the answer. Scaling the covariance by the ratio is the
+  standard a posteriori variance factor; the Tracking panel now shows the factor
+  on its own, since it is the only thing in the application that can notice a
+  camera has been knocked since it was solved.
+
+Both were reported by the existing diagnostics and neither was read as a fault.
+The lesson is not that more numbers were needed but that a number nobody has
+been told the healthy value of is not a diagnostic.
+
 ## M6 - Tuning and release
 
 - Room profile management, multiple named profiles.
