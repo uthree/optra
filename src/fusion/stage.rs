@@ -32,7 +32,7 @@ use crate::config::FusionConfig;
 use crate::geometry::camera::Camera;
 use crate::pipeline::PoseChannel;
 use crate::vr::{Role, VrChannel};
-use crate::worker::timing::{Rate, Ticker, ema};
+use crate::worker::timing::{Rate, SMOOTHING, Ticker, ema};
 use crate::worker::{Shutdown, Supervisor};
 
 use super::align::align;
@@ -518,7 +518,7 @@ fn run(
             // A camera the clock is not waiting for takes no part at all. It is
             // the flickering that hurts, not the absence.
             if !camera.admitted {
-                camera.aligned = ema(camera.aligned, 0.0);
+                camera.aligned = ema(camera.aligned, 0.0, SMOOTHING);
                 cameras.push(camera.camera.clone());
                 continue;
             }
@@ -534,7 +534,7 @@ fn run(
                 None => false,
             };
 
-            camera.aligned = ema(camera.aligned, if usable { 1.0 } else { 0.0 });
+            camera.aligned = ema(camera.aligned, if usable { 1.0 } else { 0.0 }, SMOOTHING);
             // After the resolution check, which may have rescaled the optics.
             cameras.push(camera.camera.clone());
 
@@ -645,8 +645,8 @@ fn publish(
         }
 
         if voted > 0 {
-            camera.weight = ema(camera.weight, (weight / voted as f64) as f32);
-            camera.rejected = ema(camera.rejected, rejected as f32 / voted as f32);
+            camera.weight = ema(camera.weight, (weight / voted as f64) as f32, SMOOTHING);
+            camera.rejected = ema(camera.rejected, rejected as f32 / voted as f32, SMOOTHING);
         }
     }
 
@@ -671,14 +671,18 @@ fn publish(
     // look at the panel.
     if let Some(reach) = filtered.reach {
         stats.reach = Some(match stats.reach {
-            Some(previous) => f64::from(ema(previous as f32, reach as f32)),
+            Some(previous) => f64::from(ema(previous as f32, reach as f32, SMOOTHING)),
             None => reach,
         });
     }
     // Smoothed here rather than in the fuse, which has no memory: it is a
     // property of the room and should not be seen to twitch.
     stats.disagreement = if stats.disagreement > 0.0 {
-        f64::from(ema(stats.disagreement as f32, raw.disagreement as f32))
+        f64::from(ema(
+            stats.disagreement as f32,
+            raw.disagreement as f32,
+            SMOOTHING,
+        ))
     } else {
         raw.disagreement
     };

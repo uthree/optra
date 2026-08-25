@@ -224,7 +224,7 @@ impl Rate {
         if let Some(previous) = self.last.replace(now) {
             let dt = now.duration_since(previous).as_secs_f32();
             if dt > 0.0 {
-                self.rate = ema(self.rate, 1.0 / dt);
+                self.rate = ema(self.rate, 1.0 / dt, SMOOTHING);
             }
         }
         self.rate
@@ -235,16 +235,24 @@ impl Rate {
     }
 }
 
+/// How hard a figure a person reads off a panel is smoothed, by default.
+///
+/// Named because it used to be an unnamed constant inside one of three copies
+/// of the same function, and the other two copies quietly used twice the value
+/// without anything at any call site saying so. Passing it explicitly is the
+/// point: a stage that follows a change faster than the rest should have to say
+/// that it does.
+pub const SMOOTHING: f32 = 0.05;
+
 /// One step of an exponential moving average, seeded by its first sample.
 ///
 /// Seeding matters: starting from zero would make every rate and every fraction
 /// in the UI climb slowly out of nothing for the first second, which reads as a
 /// stage struggling to start rather than as a filter warming up.
-pub fn ema(current: f32, sample: f32) -> f32 {
-    const ALPHA: f32 = 0.05;
+pub fn ema(current: f32, sample: f32, alpha: f32) -> f32 {
     if current == 0.0 {
         sample
     } else {
-        current * (1.0 - ALPHA) + sample * ALPHA
+        current * (1.0 - alpha) + sample * alpha
     }
 }

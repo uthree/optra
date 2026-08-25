@@ -22,6 +22,7 @@ use crate::capture::{CameraChannel, Frame};
 use crate::config::{CameraConfig, InferenceConfig};
 use crate::infer::Backend;
 use crate::infer::traits::{Detection, ImageView, Keypoints2d};
+use crate::worker::timing::ema;
 use crate::worker::{Shutdown, Supervisor};
 use models::{ModelSet, Models, Slot};
 
@@ -63,6 +64,14 @@ pub struct PoseStats {
 /// correction, with room for a camera that stalls briefly. Nothing ever asks
 /// for more.
 const HISTORY: Duration = Duration::from_secs(2);
+
+/// How hard this module smooths the per-camera figures it reports.
+///
+/// Twice as quick as [`crate::worker::timing::SMOOTHING`], which the rest of
+/// the application uses. Kept at the value it had while this module owned its
+/// own copy of the averaging: changing it would change what every camera
+/// reports, and that is not this change to make.
+const SMOOTHING: f32 = 0.1;
 
 /// Per-camera output of the inference stage.
 #[derive(Default)]
@@ -134,13 +143,13 @@ impl PoseChannel {
         } else {
             stats.processed += 1;
         }
-        stats.latency_ms = ema(stats.latency_ms, latency, 0.1);
+        stats.latency_ms = ema(stats.latency_ms, latency, SMOOTHING);
 
         let mut last = self.last_at.lock();
         if let Some(previous) = last.replace(now) {
             let dt = now.duration_since(previous).as_secs_f32();
             if dt > 0.0 {
-                stats.fps = ema(stats.fps, 1.0 / dt, 0.1);
+                stats.fps = ema(stats.fps, 1.0 / dt, SMOOTHING);
             }
         }
     }
@@ -180,14 +189,6 @@ impl PoseChannel {
 
     fn fail(&self, message: String) {
         self.stats.lock().last_error = Some(message);
-    }
-}
-
-fn ema(current: f32, sample: f32, alpha: f32) -> f32 {
-    if current == 0.0 {
-        sample
-    } else {
-        current * (1.0 - alpha) + sample * alpha
     }
 }
 

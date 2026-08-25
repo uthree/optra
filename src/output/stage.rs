@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use crate::config::{OutputConfig, SinkKind};
 use crate::fusion::stage::FusionChannel;
 use crate::vr::{Role, VrChannel};
-use crate::worker::timing::{Rate, Ticker, ema};
+use crate::worker::timing::{Rate, SMOOTHING, Ticker, ema};
 use crate::worker::{Shutdown, Supervisor};
 
 use super::pose::{Posture, TrackerPose, TrackerRole};
@@ -362,10 +362,10 @@ fn watch_trackers(
                 watch.seen = Some(now);
                 watch.sigma = tracker.sigma;
                 watch.inferred = tracker.inferred;
-                watch.live = ema(watch.live, 1.0);
+                watch.live = ema(watch.live, 1.0, SMOOTHING);
             }
             None => {
-                watch.live = ema(watch.live, 0.0);
+                watch.live = ema(watch.live, 0.0, SMOOTHING);
                 // Never seen at all counts as lost: a tracker that has not
                 // arrived since the stage started is not being occluded.
                 if watch

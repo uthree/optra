@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::config::{CameraConfig, ControlName};
+use crate::worker::timing::ema;
 use crate::worker::{Shutdown, Supervisor};
 use source::{ControlInfo, ControlSession, FrameSource, NegotiatedFormat};
 
@@ -94,6 +95,14 @@ impl Default for CameraStats {
     }
 }
 
+/// How hard this module smooths the per-device figures it reports.
+///
+/// Twice as quick as [`crate::worker::timing::SMOOTHING`], which the rest of
+/// the application uses. Kept at the value it had while this module owned its
+/// own copy of the averaging: changing it would change what every camera
+/// reports, and that is not this change to make.
+const SMOOTHING: f32 = 0.1;
+
 /// The runtime side of one configured camera.
 pub struct CameraChannel {
     pub config: CameraConfig,
@@ -170,7 +179,7 @@ impl CameraChannel {
 
         let mut stats = self.stats.lock();
         stats.captured += 1;
-        stats.decode_ms = ema(stats.decode_ms, decode.as_secs_f32() * 1000.0, 0.1);
+        stats.decode_ms = ema(stats.decode_ms, decode.as_secs_f32() * 1000.0, SMOOTHING);
         drop(stats);
 
         self.update_rate(now);
@@ -184,7 +193,7 @@ impl CameraChannel {
             let dt = now.duration_since(previous).as_secs_f32();
             if dt > 0.0 {
                 let mut stats = self.stats.lock();
-                stats.measured_fps = ema(stats.measured_fps, 1.0 / dt, 0.1);
+                stats.measured_fps = ema(stats.measured_fps, 1.0 / dt, SMOOTHING);
             }
         }
     }
@@ -202,14 +211,6 @@ impl CameraChannel {
         stats.state = CameraState::Failed;
         stats.errors += 1;
         stats.last_error = Some(message);
-    }
-}
-
-fn ema(current: f32, sample: f32, alpha: f32) -> f32 {
-    if current == 0.0 {
-        sample
-    } else {
-        current * (1.0 - alpha) + sample * alpha
     }
 }
 
