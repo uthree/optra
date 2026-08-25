@@ -24,12 +24,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use nalgebra::{Point3, Vector3};
 use parking_lot::Mutex;
 
 use crate::calib::RoomCalibration;
 use crate::config::FusionConfig;
 use crate::geometry::camera::Camera;
 use crate::pipeline::PoseChannel;
+use crate::vr::{Role, VrChannel};
 use crate::worker::timing::{Rate, Ticker, ema};
 use crate::worker::{Shutdown, Supervisor};
 
@@ -39,6 +41,7 @@ use super::filter::{Filtered, PoseFilter};
 use super::fit::{Fitted, Fitter};
 use super::floor::FloorMeter;
 use super::fuse::{Pose3d, Tally, fuse};
+use super::head::HeadMeter;
 use super::shake::{Shake, ShakeMeter};
 
 /// How often the bone measurement is recomputed, in ticks.
@@ -111,6 +114,13 @@ pub struct FusionStats {
     /// Where the feet say the floor is, relative to where SteamVR says it is,
     /// in metres. None until enough of the user has been seen to judge.
     pub floor: Option<f64>,
+    /// From the headset to where the cameras put the user.s head, in metres.
+    ///
+    /// The sharpest check in the application: two independent answers to the
+    /// same question, one of them from a device that knows where it is to a
+    /// millimetre. A head is about a fifth of a metre across, so anything much
+    /// past that is the room profile rather than the keypoint.
+    pub head: Option<Vector3<f64>>,
     pub measuring: bool,
     pub warning: Option<String>,
 }
@@ -180,6 +190,7 @@ impl Fusion {
         cameras: Vec<(String, Arc<PoseChannel>)>,
         room: &RoomCalibration,
         body: Skeleton,
+        vr: Option<Arc<VrChannel>>,
         supervisor: &mut Supervisor,
     ) -> Result<(), String> {
         self.stop();
@@ -231,7 +242,7 @@ impl Fusion {
 
         let config = config.clone();
         supervisor.spawn("fusion", move |global| {
-            run(channel, config, tracked, body, global)
+            run(channel, config, tracked, body, vr, global)
         });
 
         Ok(())
@@ -437,6 +448,7 @@ fn run(
     config: FusionConfig,
     mut tracked: Vec<Tracked>,
     body: Skeleton,
+    vr: Option<Arc<VrChannel>>,
     global: Shutdown,
 ) {
     tracing::info!(cameras = tracked.len(), "fusion started");
@@ -451,6 +463,7 @@ fn run(
 
     let mut meter = BoneMeter::new(measure_options.clone());
     let mut floor = FloorMeter::default();
+    let mut head = HeadMeter::default();
     let mut skeleton = body;
     let mut fitter = Fitter::new(config.fit_options(measure_options.clone()));
     let mut filter = PoseFilter::new(config.filter_options());
@@ -527,6 +540,14 @@ fn run(
         // the user's anatomy: it is about whether the frame everything else is
         // expressed in has its floor in the right place.
         floor.observe(&raw);
+        // Asked at the tick the reconstruction describes, not at real time: the
+        // clock runs a fifth of a second back and a head moves in that.
+        head.observe(
+            &raw,
+            vr.as_ref()
+                .and_then(|vr| vr.pose_at(Role::Head, at))
+                .map(|pose| Point3::from(pose.translation.vector)),
+        );
 
         if config.measure_body && !raw.is_empty() {
             meter.observe(&raw);
@@ -551,6 +572,7 @@ fn run(
             &skeleton,
             &measure_options,
             floor.estimate(),
+            head.estimate(),
             shaking.shake(),
             rate.tick(now),
             lag,
@@ -582,6 +604,7 @@ fn publish(
     skeleton: &Skeleton,
     measure: &MeasureOptions,
     floor: Option<f64>,
+    head: Option<Vector3<f64>>,
     shake: Shake,
     rate: f32,
     lag: Duration,
@@ -622,6 +645,7 @@ fn publish(
     stats.measuring = config.measure_body;
     stats.body = skeleton.clone();
     stats.floor = floor;
+    stats.head = head;
     stats.shake = shake;
     // Smoothed here rather than in the fuse, which has no memory: it is a
     // property of the room and should not be seen to twitch.
@@ -654,8 +678,38 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
         ));
     }
 
-    // Ahead of everything else, because it is the one problem that makes the
-    // whole output wrong while every other number looks healthy.
+    // Ahead of everything else, because everything else is expressed in the
+    // frame this says is wrong. The headset knows where it is to a millimetre
+    // and the cameras have their own opinion; the difference is the total error
+    // of the calibration, the lens models, the room transform and the clock,
+    // and no number below it means anything while it is large.
+    if let Some(head) = stats.head.filter(|head| head.norm() > 0.30) {
+        let vertical = head.y.abs() > (head.x.abs() + head.z.abs()) * 2.0;
+        return Some(format!(
+            "the cameras put your head {:.0} cm from where the headset says it is{}",
+            head.norm() * 100.0,
+            if vertical {
+                ", and almost all of it is height — check SteamVR's room setup before anything here"
+            } else {
+                ", so the room profile does not describe these cameras any more"
+            }
+        ));
+    }
+
+    // Before the floor, which is measured from the same reconstruction and is
+    // not worth reporting while most of that reconstruction is invented. A
+    // confident claim about SteamVR's room setup, derived from two joints out
+    // of twenty-six, is worse than saying nothing.
+    if stats.tally.missing() > stats.tally.measured
+        && let Some((why, count)) = stats.tally.commonest()
+    {
+        return Some(format!(
+            "only {} of {} joints are being measured; for {count} of the rest, {why}",
+            stats.tally.measured,
+            stats.tally.measured + stats.tally.missing(),
+        ));
+    }
+
     if let Some(floor) = stats.floor.filter(|floor| floor.abs() > 0.06) {
         return Some(format!(
             "your feet are reconstructing {:.0} cm {} the floor SteamVR reports, so its \
@@ -697,18 +751,6 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
             "{} disagrees with the others on {:.0}% of the joints it sees",
             worst.id,
             worst.rejected * 100.0
-        ));
-    }
-
-    // Ahead of the lower-body check, which is the same news without the part
-    // that says what to do about it.
-    if stats.tally.missing() > stats.tally.measured
-        && let Some((why, count)) = stats.tally.commonest()
-    {
-        return Some(format!(
-            "only {} of {} joints are being measured; for {count} of the rest, {why}",
-            stats.tally.measured,
-            stats.tally.measured + stats.tally.missing(),
         ));
     }
 

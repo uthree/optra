@@ -11,5 +11,6 @@ pub mod filter;
 pub mod fit;
 pub mod floor;
 pub mod fuse;
+pub mod head;
 pub mod shake;
 pub mod stage;

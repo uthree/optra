@@ -257,6 +257,36 @@ impl TrackingPanel {
             });
         }
 
+        // The sharpest check here: two independent answers to where the user's
+        // head is, one of them from a device that knows to a millimetre. It
+        // measures the total error of the calibration, the lens models, the
+        // room transform and the clock in one number, and the direction is most
+        // of the diagnosis — nearly all vertical is a room setup run at the
+        // wrong height, anything else is the calibration itself.
+        if let Some(head) = stats.head {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Head").weak());
+                ui.colored_label(
+                    if head.norm() <= 0.30 {
+                        GOOD
+                    } else if head.norm() <= 0.60 {
+                        FAIR
+                    } else {
+                        BAD
+                    },
+                    format!("{:.0} cm from the headset", head.norm() * 100.0),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "({:+.0} across, {:+.0} up, {:+.0} forward)",
+                        head.x * 100.0,
+                        head.y * 100.0,
+                        head.z * 100.0
+                    ))
+                    .weak(),
+                );
+            });
+        }
         // Reported next to the rate rather than buried in a section, because it
         // invalidates everything else on the panel. The cameras watching the
         // feet are an independent measurement of a quantity the rest of the

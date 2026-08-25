@@ -211,6 +211,7 @@ impl OptraApp {
                 channels,
                 room,
                 self.body.clone(),
+                self.vr.channel().cloned(),
                 &mut self.supervisor,
             )
             .err();
