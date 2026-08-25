@@ -17,6 +17,7 @@ use nalgebra::Point3;
 
 use crate::app::viewer3d::{Scene, Viewer3d};
 use crate::fusion::bones::{BONES, MeasureOptions, Skeleton};
+use crate::fusion::fuse::Missing;
 use crate::fusion::stage::{FusionFrame, FusionStats};
 use crate::models::Joint;
 use crate::vr::Role;
@@ -29,6 +30,9 @@ use super::{BAD, FAIR, GOOD, PanelContext};
 const GOOD_SIGMA: f64 = 0.01;
 /// Uncertainty past which a joint is not worth driving a tracker from.
 const POOR_SIGMA: f64 = 0.04;
+
+/// A joint the fit placed rather than the cameras seeing.
+const INFERRED: Color32 = Color32::from_rgb(150, 150, 220);
 
 #[derive(Default)]
 pub struct TrackingPanel {
@@ -185,6 +189,33 @@ impl TrackingPanel {
                 ui.label(
                     RichText::new(format!("{:.0} mm", metres * 1000.0)).color(shaking(metres)),
                 );
+            }
+        });
+
+        // Why the joints that are not measured are not measured. "Twenty-three
+        // of twenty-six inferred" says something is badly wrong and nothing
+        // about what: a camera that cannot see the legs, a model that will not
+        // commit to them, a calibration that stopped the rays meeting and a
+        // geometry that cannot place them are four unrelated problems with four
+        // different next moves. All five counts are shown whether or not they
+        // are zero, so the row never changes shape.
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Not measured").weak());
+            for (name, count) in [
+                ("unseen", stats.tally.unseen),
+                ("unsure", stats.tally.unsure),
+                ("one ray", stats.tally.one_ray),
+                ("disagreed", stats.tally.disagreed),
+                ("too uncertain", stats.tally.uncertain),
+            ] {
+                ui.label(RichText::new(name).weak());
+                ui.label(RichText::new(format!("{count}")).color(if count == 0 {
+                    GOOD
+                } else if count <= 4 {
+                    FAIR
+                } else {
+                    BAD
+                }));
             }
         });
 
@@ -502,13 +533,33 @@ fn joints(ui: &mut egui::Ui, frame: &FusionFrame) {
                         format!("{:?}", fused.rejected)
                     });
                 }
-                // Nothing saw it; the fit put it where the joints around it
-                // say it has to be.
+                // The fit put it where the joints around it say it has to be,
+                // and the interesting part is why the cameras did not. One dash
+                // here used to cover five unrelated faults.
                 None => {
-                    ui.label(RichText::new("\u{2014}").weak());
-                    ui.label(RichText::new("inferred").color(Color32::from_rgb(150, 150, 220)));
-                    ui.label(RichText::new("\u{2014}").weak());
-                    ui.label(String::new());
+                    let why = frame.raw.missing(joint);
+                    ui.label(match why {
+                        Some(Missing::Unsure { offered, .. }) => format!("{offered} unsure"),
+                        Some(Missing::OneRay) => "1".to_owned(),
+                        Some(Missing::Disagreed { rays }) => format!("{rays} split"),
+                        _ => "\u{2014}".to_owned(),
+                    });
+                    ui.label(match why {
+                        Some(Missing::Uncertain { sigma }) => {
+                            RichText::new(format!("{:.0} mm", sigma * 1000.0)).color(BAD)
+                        }
+                        _ => RichText::new("inferred").color(INFERRED),
+                    });
+                    ui.label(match why {
+                        Some(Missing::Unsure { best, .. }) => {
+                            RichText::new(format!("best {best:.2}")).weak()
+                        }
+                        _ => RichText::new("\u{2014}").weak(),
+                    });
+                    ui.label(match why {
+                        Some(why) => RichText::new(why.remedy()).weak(),
+                        None => RichText::new(String::new()),
+                    });
                 }
             }
 
@@ -622,7 +673,7 @@ fn settings(ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
 /// Colour for a positional uncertainty, in metres.
 fn quality(sigma: f64, inferred: bool) -> Color32 {
     if inferred {
-        return Color32::from_rgb(150, 150, 220);
+        return INFERRED;
     }
     if sigma <= GOOD_SIGMA {
         GOOD

@@ -38,7 +38,7 @@ use super::bones::{BoneMeter, MeasureOptions, Skeleton};
 use super::filter::{Filtered, PoseFilter};
 use super::fit::{Fitted, Fitter};
 use super::floor::FloorMeter;
-use super::fuse::{Pose3d, fuse};
+use super::fuse::{Pose3d, Tally, fuse};
 use super::shake::{Shake, ShakeMeter};
 
 /// How often the bone measurement is recomputed, in ticks.
@@ -93,6 +93,11 @@ pub struct FusionStats {
     pub inferred: usize,
     /// Lower-body joints present, which is what the trackers need.
     pub lower_body: usize,
+    /// How the body divided up between measured and the reasons it was not.
+    ///
+    /// "Twenty-three of twenty-six joints inferred" says something is badly
+    /// wrong and nothing about what. This says what.
+    pub tally: Tally,
     /// Largest distance the fit had to move a joint, in metres.
     pub worst_correction: f64,
     /// How much the body is wobbling at each stage of the chain, in metres.
@@ -612,6 +617,7 @@ fn publish(
     stats.joints = filtered.count();
     stats.inferred = fitted.inferred();
     stats.lower_body = raw.lower_body();
+    stats.tally = raw.tally();
     stats.worst_correction = fitted.worst_correction();
     stats.measuring = config.measure_body;
     stats.body = skeleton.clone();
@@ -691,6 +697,18 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
             "{} disagrees with the others on {:.0}% of the joints it sees",
             worst.id,
             worst.rejected * 100.0
+        ));
+    }
+
+    // Ahead of the lower-body check, which is the same news without the part
+    // that says what to do about it.
+    if stats.tally.missing() > stats.tally.measured
+        && let Some((why, count)) = stats.tally.commonest()
+    {
+        return Some(format!(
+            "only {} of {} joints are being measured; for {count} of the rest, {why}",
+            stats.tally.measured,
+            stats.tally.measured + stats.tally.missing(),
         ));
     }
 

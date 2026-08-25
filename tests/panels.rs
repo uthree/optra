@@ -296,6 +296,14 @@ fn tracked_fusion() -> Fusion {
         lower_body: 4,
         worst_correction: 0.031,
         disagreement: 2.4,
+        tally: optra::fusion::fuse::Tally {
+            measured: 5,
+            unseen: 12,
+            unsure: 6,
+            one_ray: 2,
+            disagreed: 1,
+            uncertain: 0,
+        },
         shake: optra::fusion::shake::Shake {
             raw: 0.011,
             fitted: 0.009,
