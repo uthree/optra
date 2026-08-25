@@ -631,3 +631,63 @@ fn a_recording_with_late_cameras_solves_once_the_delay_is_measured() {
          {uncorrected} m against {corrected} m"
     );
 }
+
+/// Delays large enough that the first resection cannot be done at all.
+///
+/// The whole latency correction hangs off a chicken and egg. Measuring a
+/// camera's delay needs a camera to reproject through, so the delay can only be
+/// found after the first fit — and a camera more than about sixty milliseconds
+/// late does not fit. Its pixels, paired with poses from sixty milliseconds
+/// after the shutter, do not agree with any one camera, and the resection ends
+/// with no consensus rather than with a bad answer.
+///
+/// That used to end the whole calibration, before the estimator ever ran, on a
+/// message about correspondences that named neither the camera's problem nor
+/// its cause. Three of these four cameras failed at eighty milliseconds and all
+/// four at a hundred and ten, which is inside the range the estimator itself
+/// calls plausible for a webcam.
+///
+/// The seed now searches for a delay that does resect, and the delays here are
+/// spread across the range where that search is the only thing standing between
+/// a solved room and an error message.
+#[test]
+fn cameras_too_late_to_resect_are_still_solved() {
+    let truth = room();
+    let configs = configs(truth.len());
+
+    for delays in [
+        [0, 80, 0, 0],
+        [0, 0, 0, 110],
+        [40, 90, 120, 60],
+        // Every camera late by the same amount, which is what a room full of
+        // one model of webcam looks like and what a per-camera search could be
+        // forgiven for treating as no delay at all.
+        [70, 70, 70, 70],
+    ] {
+        let delays: Vec<Duration> = delays.iter().map(|ms| Duration::from_millis(*ms)).collect();
+        let recording = recorded_walk(&truth, &delays);
+        let solved = solve(&recording, &configs, &SolveOptions::default())
+            .unwrap_or_else(|error| panic!("{delays:?} should still solve, got: {error}"));
+
+        for (index, calibrated) in solved.cameras.iter().enumerate() {
+            let expected = delays[index].as_secs_f64() * 1000.0;
+            let measured = calibrated
+                .latency
+                .map(|estimate| estimate.millis())
+                .unwrap_or(f64::NAN);
+            assert!(
+                (measured - expected).abs() < 8.0,
+                "{} is {expected:.0} ms late and was measured at {measured:.1} ms",
+                calibrated.id
+            );
+        }
+
+        let worst = worst_camera_error(&solved, &truth);
+        println!("{delays:?} -> worst camera {:.1} mm", worst * 1000.0);
+        assert!(
+            worst < 0.01,
+            "worst camera is {:.1} mm out with delays {delays:?}",
+            worst * 1000.0
+        );
+    }
+}

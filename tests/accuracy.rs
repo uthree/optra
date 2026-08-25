@@ -1194,4 +1194,57 @@ fn the_pose_models_reconstruct_the_body_from_rendered_frames() {
         "the hip tracker would be {:.1} cm out",
         hips * 100.0
     );
+
+    // Swaps. The table has counted these from the beginning and nothing
+    // checked them, which made the count decoration: this test would have
+    // passed with every limb on the wrong side of the body, because a mirrored
+    // joint is only a few centimetres from a real one and the medians above
+    // never notice.
+    //
+    // Two thresholds, because a swap costs different amounts in different
+    // places. A foot tracker on the wrong foot is the whole failure, so the
+    // joints the feet are built from are held tightly. The hips are held less
+    // tightly and still held: `Posture` takes the pelvis yaw from the vector
+    // between them, so a pair that trades places turns the hip tracker round.
+    // A camera looking down at somebody from behind has little to tell their
+    // left side from their right, and this is what says how often the models
+    // get it wrong rather than assuming they do not.
+    let ticks = report.ticks.max(1) as f64;
+    let rate = |joint: Joint| report.swapped.get(&joint).copied().unwrap_or(0) as f64 / ticks;
+
+    for joint in Joint::ALL.iter().copied().filter(|joint| {
+        matches!(
+            joint,
+            Joint::LeftAnkle
+                | Joint::RightAnkle
+                | Joint::LeftHeel
+                | Joint::RightHeel
+                | Joint::LeftBigToe
+                | Joint::RightBigToe
+                | Joint::LeftSmallToe
+                | Joint::RightSmallToe
+        )
+    }) {
+        assert!(
+            rate(joint) < 0.04,
+            "{} came back on the other foot on {:.0}% of ticks",
+            joint.name(),
+            rate(joint) * 100.0
+        );
+    }
+
+    for joint in [
+        Joint::LeftHip,
+        Joint::RightHip,
+        Joint::LeftKnee,
+        Joint::RightKnee,
+    ] {
+        assert!(
+            rate(joint) < 0.15,
+            "{} came back mirrored on {:.0}% of ticks, which turns the pelvis \
+             round for as long as it lasts",
+            joint.name(),
+            rate(joint) * 100.0
+        );
+    }
 }

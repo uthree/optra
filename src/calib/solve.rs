@@ -23,7 +23,7 @@ use crate::paths;
 use crate::vr::Role;
 
 use super::latency::{self, Estimate, LatencyOptions};
-use super::recorder::{Recording, Rig};
+use super::recorder::{CameraTrail, Recording, Rig};
 
 #[derive(Debug, Clone)]
 pub struct SolveOptions {
@@ -249,7 +249,13 @@ pub fn solve(
     let offsets = vec![Vector3::zeros(); recording.rigs.len()];
     let mut lags = vec![Duration::ZERO; ids.len()];
 
-    let (mut seeds, mut spreads) = seed(recording, &configs, &ids, &lags, options)?;
+    // A camera too late to resect against prompt timestamps is solved at
+    // whatever delay does work, and that delay is kept: pairing the sightings
+    // as though it were prompt would undo the only thing that got it solved.
+    // It is a twenty-millisecond grid rather than an answer, and the estimator
+    // below refines it.
+    let (mut seeds, mut spreads, seeded_at) = seed(recording, &configs, &ids, &lags, options)?;
+    lags = seeded_at;
     let mut sightings = pair(recording, &index, &lags);
     let mut refined = refine(&seeds, &offsets, &sightings, &options.refine);
 
@@ -342,7 +348,7 @@ pub fn solve(
             // instead. A camera forty milliseconds late kept 51 of its 190
             // sightings and came out 39 cm from where it was, with every other
             // camera in the room fine.
-            (seeds, spreads) = seed(recording, &configs, &ids, &lags, options)?;
+            (seeds, spreads, _) = seed(recording, &configs, &ids, &lags, options)?;
             sightings = pair(recording, &index, &lags);
             refined = refine(&seeds, &offsets, &sightings, &options.refine);
         }
@@ -399,15 +405,38 @@ pub fn solve(
 /// band of heights, and a set of points that close to a plane is degenerate for
 /// the linear solve; a hand raised and lowered is what gives the resection
 /// something to work with.
+/// The resection is also a delay detector, and this is how wide it looks when
+/// the delay it was handed does not solve.
+///
+/// Past the hundred and twenty milliseconds [`latency::Estimate::is_plausible`]
+/// will accept, so that a camera slower than that produces a solved room with a
+/// number the user can be shown and act on, rather than an error about
+/// correspondences that names neither the camera's problem nor its cause.
+const SEED_LAG_MAX: Duration = Duration::from_millis(160);
+
+/// Resolution of that search. The resection tolerates being about twenty
+/// milliseconds out and nothing like forty, so this is the coarsest step that
+/// cannot fall through the gap; the latency estimator refines from there.
+const SEED_LAG_STEP: Duration = Duration::from_millis(20);
+
+/// What one camera's resection came out as, and the delay it was solved at.
+struct Seed {
+    camera: Camera,
+    spread: f64,
+    lag: Duration,
+    inliers: usize,
+}
+
 fn seed(
     recording: &Recording,
     configs: &HashMap<&str, &CameraConfig>,
     ids: &[String],
     lags: &[Duration],
     options: &SolveOptions,
-) -> Result<(Vec<Camera>, Vec<f64>)> {
+) -> Result<(Vec<Camera>, Vec<f64>, Vec<Duration>)> {
     let mut cameras = Vec::with_capacity(ids.len());
     let mut spreads = Vec::with_capacity(ids.len());
+    let mut solved_at = Vec::with_capacity(ids.len());
 
     for (slot, id) in ids.iter().enumerate() {
         let (Some(trail), Some(config)) = (recording.trail(id), configs.get(id.as_str())) else {
@@ -415,37 +444,100 @@ fn seed(
         };
         let lag = lags.get(slot).copied().unwrap_or(Duration::ZERO);
 
-        let correspondences: Vec<Correspondence> = trail
-            .samples
-            .iter()
-            .filter_map(|sample| {
-                let pose = recording.tracks[sample.rig].at(sample.at.checked_sub(lag)?)?;
-                Some(Correspondence {
-                    world: Point3::from(pose.translation.vector),
-                    pixel: sample.pixel,
-                })
-            })
-            .collect();
+        // The delay this camera was handed, and then — only if that does not
+        // solve — every delay it might have instead.
+        //
+        // A camera eighty milliseconds late does not resect at all against
+        // pixels paired with poses from eighty milliseconds after the shutter:
+        // the correspondences do not agree with any one camera, and the search
+        // ends with no consensus rather than with a bad answer. Before this,
+        // that ended the whole calibration on a message about correspondences,
+        // and it ended it *before* the latency estimator ran — which needs a
+        // camera to reproject through and so could never have rescued it. Four
+        // cameras with sixty milliseconds between them and nothing solved.
+        //
+        // The resection is a sharp detector of its own delay, which is what
+        // makes the sweep cheap: it fails outright at zero, twenty, forty and
+        // sixty and comes back clean at eighty. Taking the most inliers rather
+        // than the first success is what keeps it from stopping at the edge of
+        // that window.
+        let solved = resect_at(recording, trail, config, lag, options).or_else(|| {
+            let mut steps = 0;
+            let mut best: Option<Seed> = None;
+            while SEED_LAG_STEP * steps <= SEED_LAG_MAX {
+                let candidate = resect_at(recording, trail, config, SEED_LAG_STEP * steps, options);
+                if let Some(candidate) = candidate
+                    && best
+                        .as_ref()
+                        .is_none_or(|best| candidate.inliers > best.inliers)
+                {
+                    best = Some(candidate);
+                }
+                steps += 1;
+            }
+            if let Some(found) = &best {
+                tracing::warn!(
+                    camera = %id,
+                    lag_ms = found.lag.as_secs_f64() * 1000.0,
+                    "this camera only resects if its frames are treated as late"
+                );
+            }
+            best
+        });
 
-        let lens = Lens::for_kind(config.lens);
-        let guess = Intrinsics::from_fov(
-            trail.width,
-            trail.height,
-            seed_fov(config.lens).to_radians(),
-        );
-
-        let Some(resection) = resect(&guess, lens, &correspondences, &options.resection) else {
+        let Some(solved) = solved else {
             bail!(
-                "camera {id} could not be solved from {} correspondences",
-                correspondences.len()
+                "camera {id} could not be solved from {} sightings at any delay \
+                 up to {} ms; either it moved during the walk or it is seeing \
+                 something other than the headset",
+                trail.samples.len(),
+                SEED_LAG_MAX.as_millis()
             );
         };
 
-        cameras.push(resection.camera);
-        spreads.push(resection.spread);
+        cameras.push(solved.camera);
+        spreads.push(solved.spread);
+        solved_at.push(solved.lag);
     }
 
-    Ok((cameras, spreads))
+    Ok((cameras, spreads, solved_at))
+}
+
+/// Resects one camera with its pixels paired against poses from `lag` before
+/// the timestamps they carry.
+fn resect_at(
+    recording: &Recording,
+    trail: &CameraTrail,
+    config: &CameraConfig,
+    lag: Duration,
+    options: &SolveOptions,
+) -> Option<Seed> {
+    let correspondences: Vec<Correspondence> = trail
+        .samples
+        .iter()
+        .filter_map(|sample| {
+            let pose = recording.tracks[sample.rig].at(sample.at.checked_sub(lag)?)?;
+            Some(Correspondence {
+                world: Point3::from(pose.translation.vector),
+                pixel: sample.pixel,
+            })
+        })
+        .collect();
+
+    let lens = Lens::for_kind(config.lens);
+    let guess = Intrinsics::from_fov(
+        trail.width,
+        trail.height,
+        seed_fov(config.lens).to_radians(),
+    );
+
+    let resection = resect(&guess, lens, &correspondences, &options.resection)?;
+    Some(Seed {
+        camera: resection.camera,
+        spread: resection.spread,
+        lag,
+        inliers: resection.inliers.len(),
+    })
 }
 
 fn pair(recording: &Recording, index: &HashMap<&str, usize>, lags: &[Duration]) -> Vec<Sighting> {
