@@ -4,10 +4,19 @@ pub mod calibration;
 pub mod cameras;
 pub mod log;
 pub mod models;
+pub mod notice;
 pub mod output;
 pub mod tracking;
 
+use egui::Color32;
 use serde::{Deserialize, Serialize};
+
+/// Something is as good as the hardware can make it.
+pub const GOOD: Color32 = Color32::from_rgb(120, 200, 120);
+/// Something works, but is worth knowing about.
+pub const FAIR: Color32 = Color32::from_rgb(240, 180, 100);
+/// Something is not usable.
+pub const BAD: Color32 = Color32::from_rgb(230, 120, 120);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use egui::{Color32, RichText, TextureHandle, TextureOptions};
 
 use super::PanelContext;
+use super::notice::{Level, Notice};
 use crate::capture::source::ControlInfo;
 use crate::capture::{CameraCommand, CameraState};
 use crate::config::{CameraConfig, ControlName, LensKind, Rotation, SourceConfig};
@@ -32,6 +33,11 @@ pub struct CamerasPanel {
     /// The model catalogue, read once for the per-camera model pickers.
     catalogue: Vec<ModelSpec>,
     catalogue_loaded: bool,
+    /// The last error each camera reported, held steady. A device that fails
+    /// intermittently — which is what a marginal USB link does — would
+    /// otherwise add and remove a line of text between every camera's
+    /// controls, and the controls are what the user is trying to click.
+    errors: HashMap<String, Notice>,
 }
 
 struct DetectedDevice {
@@ -285,13 +291,14 @@ impl CamerasPanel {
                         }
                     });
 
-                    if let Some(error) = &stats.last_error {
-                        ui.label(
-                            RichText::new(error)
-                                .color(Color32::from_rgb(240, 100, 100))
-                                .small(),
-                        );
-                    }
+                    let id = camera.id.clone();
+                    self.errors.entry(id).or_default().show(
+                        ui,
+                        stats
+                            .last_error
+                            .as_ref()
+                            .map(|text| (text.clone(), Level::Problem)),
+                    );
 
                     if !stats.controls.is_empty() {
                         self.device_controls(ui, ctx, index, &stats.controls);

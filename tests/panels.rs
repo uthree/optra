@@ -37,7 +37,7 @@ fn draw_every_panel(config: Config) {
     let mut models_panel = models::ModelsPanel::default();
     let mut calibration_panel = calibration::CalibrationPanel::default();
     let mut tracking_panel = tracking::TrackingPanel::default();
-    let mut output_panel = output::OutputPanel;
+    let mut output_panel = output::OutputPanel::default();
     let mut log_panel = log::LogPanel::default();
 
     let ctx = egui::Context::default();
@@ -443,7 +443,7 @@ fn no_panel_spills_out_of_a_short_window() {
     let mut models_panel = models::ModelsPanel::default();
     let mut calibration_panel = calibration::CalibrationPanel::default();
     let mut tracking_panel = tracking::TrackingPanel::default();
-    let mut output_panel = output::OutputPanel;
+    let mut output_panel = output::OutputPanel::default();
     let mut log_panel = log::LogPanel::default();
 
     let ctx = egui::Context::default();
@@ -530,7 +530,7 @@ fn a_sending_output_lays_out() {
     let mut room = None;
     let mut fusion = tracked_fusion();
     let mut sender = sending_output();
-    let mut panel = output::OutputPanel;
+    let mut panel = output::OutputPanel::default();
 
     let ctx = egui::Context::default();
     // Twice, so the collapsing sections draw their bodies.

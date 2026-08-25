@@ -21,6 +21,7 @@ use crate::calib::{RoomCalibration, SolveOptions, solve};
 use crate::vr::{LinkState, Role};
 
 use super::PanelContext;
+use super::notice::{Level, Notice};
 
 /// Rotation spread below which a rig's offset cannot be separated from a shift
 /// of every camera.
@@ -61,6 +62,9 @@ pub struct CalibrationPanel {
     /// because it is the most direct answer to "do these cameras agree with
     /// the room": the walk drawn through them should look like the room.
     walk: Vec<Point3<f64>>,
+    /// What the recorder is complaining about, held steady while the coverage
+    /// tables under it stay put.
+    notice: Notice,
 }
 
 #[derive(Default)]
@@ -280,10 +284,16 @@ impl CalibrationPanel {
             }
         });
 
-        if let Some(warning) = &stats.warning {
+        if self.notice.visible() {
             ui.add_space(4.0);
-            ui.colored_label(Color32::from_rgb(230, 180, 90), warning);
         }
+        self.notice.show(
+            ui,
+            stats
+                .warning
+                .as_ref()
+                .map(|text| (text.clone(), Level::Warning)),
+        );
 
         ui.add_space(8.0);
         self.rigs(ui, &stats);

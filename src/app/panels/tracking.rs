@@ -21,7 +21,8 @@ use crate::fusion::stage::{FusionFrame, FusionStats};
 use crate::models::Joint;
 use crate::vr::Role;
 
-use super::PanelContext;
+use super::notice::{Level, Notice, Threshold};
+use super::{BAD, FAIR, GOOD, PanelContext};
 
 /// Positional uncertainty a joint is good at, in metres. Below this the joint
 /// is as good as the cameras can make it.
@@ -35,6 +36,12 @@ pub struct TrackingPanel {
     /// Set once, the first time a body appears, so the view starts pointed at
     /// the user instead of at the origin.
     framed: bool,
+    /// Whatever is wrong with the reconstruction, held steady.
+    notice: Notice,
+    /// The fit correction, which hovers on its threshold while a user stands
+    /// still and would otherwise strobe the button under it.
+    correction: Notice,
+    correcting: Threshold,
 }
 
 impl TrackingPanel {
@@ -96,8 +103,12 @@ impl TrackingPanel {
         ui.label(RichText::new("Not tracking.").strong());
         ui.add_space(6.0);
 
-        if let Some(problem) = ctx.fusion_problem {
-            ui.label(RichText::new(problem).color(Color32::from_rgb(240, 180, 100)));
+        self.notice.show(
+            ui,
+            ctx.fusion_problem
+                .map(|text| (text.to_owned(), Level::Warning)),
+        );
+        if self.notice.visible() {
             ui.add_space(6.0);
         }
 
@@ -119,9 +130,9 @@ impl TrackingPanel {
             ),
         ] {
             let (mark, colour) = if met {
-                ("\u{2713}", Color32::from_rgb(120, 200, 120))
+                ("\u{2713}", GOOD)
             } else {
-                ("\u{2717}", Color32::from_rgb(230, 120, 120))
+                ("\u{2717}", BAD)
             };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(mark).color(colour));
@@ -165,20 +176,26 @@ impl TrackingPanel {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Floor").weak());
                 ui.colored_label(
-                    if floor.abs() <= 0.06 {
-                        Color32::from_rgb(120, 200, 120)
-                    } else {
-                        Color32::from_rgb(240, 180, 100)
-                    },
+                    if floor.abs() <= 0.06 { GOOD } else { FAIR },
                     format!("{:+.0} cm against SteamVR's", floor * 100.0),
                 );
             });
         }
 
-        if let Some(warning) = &stats.warning {
+        // Latched, because the whole panel hangs below it. Every warning here
+        // is a live statistic against a fixed limit, and a camera or a floor
+        // estimate sitting on its limit would otherwise move the skeleton, the
+        // tables and every button under them at the repaint rate.
+        if self.notice.visible() {
             ui.add_space(4.0);
-            ui.label(RichText::new(warning).color(Color32::from_rgb(240, 180, 100)));
         }
+        self.notice.show(
+            ui,
+            stats
+                .warning
+                .as_ref()
+                .map(|text| (text.clone(), Level::Warning)),
+        );
     }
 
     fn view(&mut self, ui: &mut egui::Ui, frame: &FusionFrame, stats: &FusionStats) {
@@ -250,15 +267,22 @@ impl TrackingPanel {
             }
         });
 
-        if stats.worst_correction > 0.02 {
-            ui.label(
-                RichText::new(format!(
-                    "The fit is moving a joint {:.0} cm to keep the body together.",
-                    stats.worst_correction * 100.0
-                ))
-                .weak(),
-            );
-        }
+        // Two centimetres is a limit the correction wanders across constantly
+        // on a body standing still, and this line sits under the button that
+        // frames the view.
+        let correcting = self
+            .correcting
+            .over(stats.worst_correction, 0.02, 0.25)
+            .then(|| {
+                (
+                    format!(
+                        "The fit is moving a joint {:.0} cm to keep the body together.",
+                        stats.worst_correction * 100.0
+                    ),
+                    Level::Warning,
+                )
+            });
+        self.correction.show(ui, correcting);
     }
 
     fn body(&mut self, ui: &mut egui::Ui, ctx: &mut PanelContext<'_>, stats: &FusionStats) {
@@ -299,13 +323,8 @@ impl TrackingPanel {
                 ui.label(bone.label());
                 ui.label(format!("{:.1} cm", measured.length * 100.0));
                 ui.label(
-                    RichText::new(format!("\u{b1}{:.1} cm", measured.scatter * 100.0)).color(
-                        if settled {
-                            Color32::from_rgb(120, 200, 120)
-                        } else {
-                            Color32::from_rgb(240, 180, 100)
-                        },
-                    ),
+                    RichText::new(format!("\u{b1}{:.1} cm", measured.scatter * 100.0))
+                        .color(if settled { GOOD } else { FAIR }),
                 );
                 ui.label(format!("{}", measured.samples));
                 ui.end_row();
@@ -348,7 +367,7 @@ fn height_check(ui: &mut egui::Ui, body: &Skeleton, ctx: &PanelContext<'_>) {
             RichText::new(format!(
                 "{text} That is a large disagreement — check the room profile."
             ))
-            .color(Color32::from_rgb(240, 180, 100)),
+            .color(FAIR),
         );
     } else {
         ui.label(RichText::new(text).weak());
@@ -368,19 +387,14 @@ fn cameras(ui: &mut egui::Ui, stats: &FusionStats) {
                 ui.label(&camera.id);
 
                 if let Some(problem) = &camera.problem {
-                    ui.label(RichText::new(problem).color(Color32::from_rgb(230, 120, 120)));
+                    ui.label(RichText::new(problem).color(BAD));
                     ui.end_row();
                     continue;
                 }
 
                 ui.label(
-                    RichText::new(format!("{:.0}%", camera.aligned * 100.0)).color(
-                        if camera.aligned > 0.9 {
-                            Color32::from_rgb(120, 200, 120)
-                        } else {
-                            Color32::from_rgb(240, 180, 100)
-                        },
-                    ),
+                    RichText::new(format!("{:.0}%", camera.aligned * 100.0))
+                        .color(if camera.aligned > 0.9 { GOOD } else { FAIR }),
                 );
                 ui.label(format!("{:.0}%", camera.weight * 100.0));
                 ui.label(
@@ -388,7 +402,7 @@ fn cameras(ui: &mut egui::Ui, stats: &FusionStats) {
                         if camera.rejected < 0.2 {
                             Color32::from_rgb(160, 160, 160)
                         } else {
-                            Color32::from_rgb(230, 120, 120)
+                            BAD
                         },
                     ),
                 );
@@ -537,10 +551,10 @@ fn quality(sigma: f64, inferred: bool) -> Color32 {
         return Color32::from_rgb(150, 150, 220);
     }
     if sigma <= GOOD_SIGMA {
-        Color32::from_rgb(120, 200, 120)
+        GOOD
     } else if sigma <= POOR_SIGMA {
-        Color32::from_rgb(240, 180, 100)
+        FAIR
     } else {
-        Color32::from_rgb(230, 120, 120)
+        BAD
     }
 }

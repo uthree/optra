@@ -7,25 +7,26 @@
 //! was never loaded, or a consumer listening on a different port. So the panel
 //! leads with which of those it is rather than with a row of zeroes.
 
-use egui::{Color32, RichText};
+use egui::RichText;
 
 use crate::config::{OutputConfig, SinkKind};
 use crate::output::TrackerRole;
 use crate::output::stage::{OutputStats, TrackerReport};
 
-use super::PanelContext;
+use super::notice::{Level, Notice};
+use super::{BAD, FAIR, GOOD, PanelContext};
 
 /// Uncertainty a tracker is good at, in metres.
 const GOOD_SIGMA: f64 = 0.02;
 /// Uncertainty past which a tracker is not worth driving a limb from.
 const POOR_SIGMA: f64 = 0.05;
 
-const GOOD: Color32 = Color32::from_rgb(120, 200, 120);
-const FAIR: Color32 = Color32::from_rgb(240, 180, 100);
-const BAD: Color32 = Color32::from_rgb(230, 120, 120);
-
 #[derive(Default)]
-pub struct OutputPanel;
+pub struct OutputPanel {
+    /// Whatever is wrong, held steady. The trackers section under it is a
+    /// grid of checkboxes, and a line appearing above them moves every one.
+    notice: Notice,
+}
 
 impl OutputPanel {
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
@@ -73,11 +74,19 @@ impl OutputPanel {
             );
         });
 
-        if let Some(problem) = &stats.problem {
-            ui.label(RichText::new(problem).color(BAD));
-        } else if let Some(warning) = &stats.warning {
-            ui.label(RichText::new(warning).color(FAIR));
-        }
+        // Latched: this line sits directly above a grid of checkboxes, and
+        // the statistics behind it cross their thresholds every repaint.
+        let wanted = stats
+            .problem
+            .as_ref()
+            .map(|text| (text.clone(), Level::Problem))
+            .or_else(|| {
+                stats
+                    .warning
+                    .as_ref()
+                    .map(|text| (text.clone(), Level::Warning))
+            });
+        self.notice.show(ui, wanted);
     }
 
     /// What to say when nothing is going out.
@@ -89,8 +98,12 @@ impl OutputPanel {
         ui.label(RichText::new("Not sending.").strong());
         ui.add_space(6.0);
 
-        if let Some(problem) = ctx.output_problem {
-            ui.label(RichText::new(problem).color(BAD));
+        self.notice.show(
+            ui,
+            ctx.output_problem
+                .map(|text| (text.to_owned(), Level::Problem)),
+        );
+        if self.notice.visible() {
             ui.add_space(6.0);
         }
 
