@@ -1160,13 +1160,42 @@ joint moving clear of its noise floor passes through untouched, one buried in it
 scales to nothing, and in between it fades. It costs no lag, which is what makes
 it usable mid-stride.
 
-It is not free. On the simulated walk the prediction went from 4.6 cm to 6.5 cm
-against 12.2 cm unpredicted — but that walk is built from millimetre-accurate
-joints, so its velocities are far better determined than a real room's and the
-caution buys least precisely where it is measured. Since the velocity now has to
-earn its keep, it became worth estimating better, and the process noise came
-down from 8 m/s² to 5: below that the position starts lagging and above it the
-velocity estimate is no better than a two-frame difference.
+It is not free, and how expensive it is was underestimated here for some time.
+Since the velocity now has to earn its keep, it became worth estimating better,
+and the process noise came down from 8 m/s² to 5: below that the position starts
+lagging and above it the velocity estimate is no better than a two-frame
+difference.
+
+**What the caution actually costs.** The figures that settled the paragraphs
+above were all taken against the smoothed position at a single instant, and
+section 14.4 explains why that was the wrong measurement: the smoothed pose is
+an intermediate, the extrapolation is what reaches a tracker, and neither can
+tell being wrong from being late. Scored properly, the gate holds a joint walking
+through a centimetre of jitter back to three quarters of its own speed, and a
+joint moving at 0.3 m/s to *none of it at all*:
+
+| speed | at full caution | at none |
+|---|---|---|
+| 1.0 m/s | 69 mm ahead, on 75% of the measured speed | 92 mm, on 100% |
+| 0.3 m/s | 0 mm ahead, on 0% | 42 mm, on 100% |
+
+End to end on the simulated walk that is 80 ms of latency and half the error
+of what the trackers are sent. The other side of it is on the same test: a joint
+that never moved is sent 3 mm from where it is at full caution and 54 mm at none,
+which is the vibrating body this section is about.
+
+**So it is a setting, at the default it already had.** The gate weighs a velocity
+against a noise floor, and how much of a real movement that floor swallows
+depends on how noisy a particular room's cameras and pose model are — a sharp
+model on well-lit 1080p leaves a signal worth following where a 480p webcam
+leaves noise. There is no answer this code can hold. Both ends are exposed:
+`Body agility`, which sets the floor, and `Prediction caution`, which scales
+how much of it is subtracted.
+
+Neither is judgeable without seeing both costs, so the Tracking panel shows the
+share of the measured speed the prediction is reaching for alongside the shake
+figures it has always shown. Sliders that trade one fault for the other while
+only one of them is on screen are worse than no sliders.
 
 Separately, a joint that has been out of sight for more than a few frames has
 its velocity discarded rather than inferred across the gap. A constant-velocity
@@ -1595,6 +1624,20 @@ Camera identity is keyed on the device path so that USB re-enumeration does not
 silently swap two cameras and invalidate a calibration. When a configured camera
 is missing, Optra reports it instead of falling back to an arbitrary device.
 
+**What goes in `config.toml` and what does not.** Thresholds the code can answer
+for stay in the code: outlier limits, how many passes the fit makes, what counts
+as a solved camera. A number in a text file that nothing has a reason to change
+is a way to break tracking, not a feature.
+
+The exception is a setting whose right value depends on something only the user's
+room contains. Both filter constants in 9.5 are like that — they trade following
+a movement against ignoring noise, and where the best point sits depends on how
+noisy that room's cameras and pose model are. The accuracy harness can show the
+shape of the trade, and it also shows there is no single answer, since two
+simulated bodies in this repository want opposite settings. When a constant is
+exposed for that reason, the panel that exposes it has to show both costs while
+it is moved; otherwise the user is trading one fault for another blind.
+
 ## 14. Measuring accuracy without a room
 
 Every test in this project used to begin after inference. The fusion tests
@@ -1769,13 +1812,25 @@ the extrapolation by a factor averaging 0.12 on this walk, because an agility
 of 5 m/s² at 20 Hz leaves a velocity noise floor of 0.65 m/s and a hip does not
 walk that fast.
 
-It is not tuned here, because the two synthetic walks disagree about the fix.
-Lowering the agility takes this walk from 4.6 cm to 2.5 cm and the one in
+There is no single fix, and the two synthetic walks are what says so. Lowering
+the agility takes this walk from 4.6 cm to 2.5 cm and the one in
 `tests/fusion.rs`, whose legs move at a couple of metres per second, from 6.6 cm
-to 9.2 cm. That is a genuine trade between two bodies rather than a bug, and
-choosing a side is a decision. What has changed is that it is now a decision
-somebody can make with numbers in front of them — and that several of the
-choices recorded in 9.5 were made against the metric this section just replaced.
+to 9.2 cm. That is a genuine trade between two bodies rather than a bug.
+
+Which is why the gate and the process noise it is measured against both became
+settings rather than new defaults — see the end of 9.5. The disagreement between
+two walks in this repository is a small version of the disagreement between two
+users' rooms, and neither is something this code can resolve on their behalf.
+
+The harness keeps a test on the settings themselves, because a number a user can
+move is a promise about what moving it does, and the filter's own tests cannot
+check that promise: they can say the prediction reaches further, and only a walk
+with a known answer can say whether reaching further puts the body nearer to
+where it actually is. It deliberately does not assert that bold is better.
+
+Worth recording separately: several of the choices in 9.5 were measured against
+the metric this section replaced, so the numbers in it are not wrong but are
+answering a slightly different question than they appear to.
 
 ### 14.6 What it says so far
 

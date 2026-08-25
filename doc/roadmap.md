@@ -369,9 +369,17 @@ Six things came out of building it and then reviewing it adversarially:
   further on. Scoring the right thing, against a sweep of instants rather than
   one, says the geometry is accurate to half a centimetre and the filter loses
   most of it: what goes out is 4.6 cm from the truth and 80 ms behind the moment
-  it claims to describe. The cause is isolated to the velocity credibility gate,
-  and it is not tuned yet because the two synthetic walks disagree about the
-  fix — see section 14.5 of [design.md](design.md).
+  it claims to describe. The cause is the velocity credibility gate, which holds
+  a joint walking at 0.3 m/s to none of its own speed at all.
+- **Two synthetic bodies wanting opposite settings is the answer, not a
+  blocker.** Lowering the process noise halves the error on the walking body and
+  makes the fast one in `tests/fusion.rs` half as good again. The gate weighs a
+  velocity against a noise floor set by the cameras and the pose model, so where
+  it belongs is a property of the user's room. Both ends are now settings at
+  their existing defaults — `Body agility` and `Prediction caution` — and the
+  Tracking panel shows how much of the measured speed the prediction is reaching
+  for, beside the shake figures, so that neither can be traded for the other
+  blind. Sections 9.5 and 14.5 of [design.md](design.md).
 - **Rendering has to be deterministic to be worth asserting on.** The renderer
   is a software rasteriser rather than the GPU already in the process, because a
   threshold tight enough to be useful would otherwise fail on somebody else's
