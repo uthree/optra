@@ -31,6 +31,7 @@ use super::filter::{Filtered, PoseFilter};
 use super::fit::{Fitted, Fitter};
 use super::floor::FloorMeter;
 use super::fuse::{Pose3d, fuse};
+use super::shake::{Shake, ShakeMeter};
 
 /// How often the bone measurement is recomputed, in ticks.
 ///
@@ -86,6 +87,8 @@ pub struct FusionStats {
     pub lower_body: usize,
     /// Largest distance the fit had to move a joint, in metres.
     pub worst_correction: f64,
+    /// How much the body is wobbling at each stage of the chain, in metres.
+    pub shake: Shake,
     pub cameras: Vec<CameraContribution>,
     /// The body measurement as it stands.
     pub body: Skeleton,
@@ -304,6 +307,10 @@ fn run(
     let mut fitter = Fitter::new(config.fit_options(measure_options.clone()));
     let mut filter = PoseFilter::new(config.filter_options());
 
+    // One meter per stage, so that "it shakes" can be answered with which
+    // stage it started shaking at.
+    let mut shaking = ShakeMeters::default();
+
     let mut ticker = Ticker::at_hz(config.rate_hz as f32);
     let mut rate = Rate::default();
     let mut since_measure = 0u32;
@@ -360,6 +367,7 @@ fn run(
 
         let fitted = fitter.fit(&raw, &skeleton);
         let filtered = filter.push(&fitted);
+        shaking.observe(&raw, &fitted, &filtered);
 
         publish(
             &channel,
@@ -371,6 +379,7 @@ fn run(
             &skeleton,
             &measure_options,
             floor.estimate(),
+            shaking.shake(),
             rate.tick(now),
             lag,
         );
@@ -401,6 +410,7 @@ fn publish(
     skeleton: &Skeleton,
     measure: &MeasureOptions,
     floor: Option<f64>,
+    shake: Shake,
     rate: f32,
     lag: Duration,
 ) {
@@ -439,6 +449,7 @@ fn publish(
     stats.measuring = config.measure_body;
     stats.body = skeleton.clone();
     stats.floor = floor;
+    stats.shake = shake;
     stats.cameras = tracked
         .iter()
         .map(|camera| CameraContribution {
@@ -515,6 +526,46 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
     }
 
     None
+}
+
+/// The four stage meters, kept together because they are always read together.
+///
+/// The prediction is measured where the joint is *told* to be rather than where
+/// it was smoothed to, which is the whole reason for having a fourth meter: a
+/// prediction is a position plus a velocity times a lead, and the velocity is
+/// the one part of this chain that can add movement to a signal instead of
+/// removing it.
+#[derive(Debug, Default)]
+struct ShakeMeters {
+    raw: ShakeMeter,
+    fitted: ShakeMeter,
+    filtered: ShakeMeter,
+    predicted: ShakeMeter,
+}
+
+impl ShakeMeters {
+    fn observe(&mut self, raw: &Pose3d, fitted: &Fitted, filtered: &Filtered) {
+        self.raw
+            .observe(raw.iter().map(|(joint, fused)| (joint, fused.point)));
+        self.fitted.observe(
+            fitted
+                .iter()
+                .map(|(joint, joint_fit)| (joint, joint_fit.point)),
+        );
+        self.filtered
+            .observe(filtered.iter().map(|(joint, one)| (joint, one.point)));
+        self.predicted
+            .observe(filtered.iter().map(|(joint, one)| (joint, one.predicted)));
+    }
+
+    fn shake(&self) -> Shake {
+        Shake {
+            raw: self.raw.metres(),
+            fitted: self.fitted.metres(),
+            filtered: self.filtered.metres(),
+            predicted: self.predicted.metres(),
+        }
+    }
 }
 
 #[cfg(test)]

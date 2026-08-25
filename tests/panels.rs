@@ -295,6 +295,12 @@ fn tracked_fusion() -> Fusion {
         inferred: 1,
         lower_body: 4,
         worst_correction: 0.031,
+        shake: optra::fusion::shake::Shake {
+            raw: 0.011,
+            fitted: 0.009,
+            filtered: 0.002,
+            predicted: 0.014,
+        },
         cameras: vec![
             CameraContribution {
                 id: "cam0".to_owned(),

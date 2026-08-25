@@ -168,6 +168,26 @@ impl TrackingPanel {
             ui.label(RichText::new(format!("{:.0} ms behind", stats.lag_ms)).weak());
         });
 
+        // Where shaking comes from, read left to right. The chain is four
+        // stages long and each one can shake for its own reason, so "it
+        // shakes" on its own has never been a report anybody could act on.
+        // Anything moving at a constant velocity contributes nothing to these
+        // numbers, so walking about does not inflate them.
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Shake").weak());
+            for (name, metres) in [
+                ("cameras", stats.shake.raw),
+                ("fit", stats.shake.fitted),
+                ("smoothed", stats.shake.filtered),
+                ("sent", stats.shake.predicted),
+            ] {
+                ui.label(RichText::new(name).weak());
+                ui.label(
+                    RichText::new(format!("{:.0} mm", metres * 1000.0)).color(shaking(metres)),
+                );
+            }
+        });
+
         // Reported next to the rate rather than buried in a section, because it
         // invalidates everything else on the panel. The cameras watching the
         // feet are an independent measurement of a quantity the rest of the
@@ -553,6 +573,20 @@ fn quality(sigma: f64, inferred: bool) -> Color32 {
     if sigma <= GOOD_SIGMA {
         GOOD
     } else if sigma <= POOR_SIGMA {
+        FAIR
+    } else {
+        BAD
+    }
+}
+
+/// Colours a stage's wobble.
+///
+/// A millimetre or two is the quantisation of a well-seen joint and is what a
+/// good chain looks like. A centimetre is visible in the game.
+fn shaking(metres: f64) -> Color32 {
+    if metres <= 0.003 {
+        GOOD
+    } else if metres <= 0.010 {
         FAIR
     } else {
         BAD
