@@ -57,6 +57,7 @@ impl Room {
             Vector3::x() * span,
             Vector3::z() * span,
             self.tile,
+            Vector3::y(),
             |column, row| {
                 if (column + row) % 2 == 0 {
                     self.floor.0
@@ -66,11 +67,23 @@ impl Room {
             },
         );
 
-        for (from, along) in [
-            (corner, Vector3::x() * span),
-            (corner + Vector3::x() * span, Vector3::z() * span),
-            (corner + Vector3::new(span, 0.0, span), Vector3::x() * -span),
-            (corner + Vector3::z() * span, Vector3::z() * -span),
+        for (from, along, inward) in [
+            (corner, Vector3::x() * span, Vector3::z()),
+            (
+                corner + Vector3::x() * span,
+                Vector3::z() * span,
+                -Vector3::x(),
+            ),
+            (
+                corner + Vector3::new(span, 0.0, span),
+                Vector3::x() * -span,
+                -Vector3::z(),
+            ),
+            (
+                corner + Vector3::z() * span,
+                Vector3::z() * -span,
+                Vector3::x(),
+            ),
         ] {
             tile(
                 &mut mesh,
@@ -78,6 +91,7 @@ impl Room {
                 along,
                 Vector3::y() * self.ceiling,
                 self.tile,
+                inward,
                 |_, _| self.wall,
             );
         }
@@ -88,6 +102,7 @@ impl Room {
             Vector3::x() * span,
             Vector3::z() * span,
             self.tile,
+            -Vector3::y(),
             |_, _| self.ceiling_color,
         );
 
@@ -139,38 +154,70 @@ impl Room {
     /// every bug that comes from mixing them, and mixing them is the normal
     /// case for a user assembling a rig out of whatever webcams they own.
     pub fn cameras(&self, count: usize) -> Vec<Camera> {
-        // The distortion is mild, and deliberately so. `1 + k1 r^2` stops being
-        // monotonic at `r = sqrt(-1/(3 k1))`, and past that peak two different
-        // directions land on the same pixel and no pixel has a ray at all —
-        // which is not a lens, it is a polynomial out of its range. A wide
-        // camera has a large normalised radius at the corner of its frame, so
-        // the wider the camera the smaller the `k1` it can carry before its own
-        // corners fall off the far side of that peak. These stay inside it with
-        // room to spare, which is also what a solved room looks like: a lens
-        // needing more than this is a fisheye, and there is a separate model
-        // for those.
-        const FITTED: [(u32, u32, f64, f64); 4] = [
-            (1280, 720, 80.0, 0.0),
-            (1920, 1080, 78.0, -0.08),
-            (640, 480, 96.0, -0.035),
-            (1280, 960, 84.0, -0.05),
-        ];
-
         (0..count as u32)
             .map(|seat| {
-                let (width, height, fov, k1) = FITTED[seat as usize % FITTED.len()];
-                let lens = Lens::RadialTangential {
-                    k1,
-                    k2: 0.0,
-                    // A trace of tangential distortion on one camera, so that
-                    // the terms are not silently untested by every camera
-                    // having a perfectly centred sensor.
-                    p1: if seat == 1 { 0.0004 } else { 0.0 },
-                    p2: if seat == 1 { -0.0003 } else { 0.0 },
-                };
-                self.ceiling_camera(seat, width, height, fov.to_radians(), lens)
+                let (width, height) = RESOLUTIONS[seat as usize % RESOLUTIONS.len()];
+                self.camera_at(seat, width, height)
             })
             .collect()
+    }
+
+    /// One camera of that set, at a resolution of the caller's choosing.
+    ///
+    /// The field of view and the distortion belong to the seat and the
+    /// resolution does not, so a synthetic capture source can honour whatever
+    /// format its camera was configured for and still get an optic unlike its
+    /// neighbours'.
+    pub fn camera_at(&self, seat: u32, width: u32, height: u32) -> Camera {
+        let (fov, strength) = OPTICS[seat as usize % OPTICS.len()];
+        let intrinsics = Intrinsics::from_fov(width.max(64), height.max(64), fov.to_radians());
+        self.ceiling_camera(
+            seat,
+            intrinsics.width,
+            intrinsics.height,
+            fov.to_radians(),
+            barrel(&intrinsics, strength, seat == 1),
+        )
+    }
+}
+
+/// Field of view in degrees and how hard the lens bends, per seat.
+///
+/// One camera with a perfect lens, so that a bug in the undistortion has
+/// somewhere to show up as a difference between cameras rather than as a
+/// uniform shift nothing can see.
+const OPTICS: [(f64, f64); 4] = [(80.0, 0.0), (78.0, 0.55), (96.0, 0.55), (84.0, 0.4)];
+
+/// Resolutions to go with them, when the caller has no opinion.
+const RESOLUTIONS: [(u32, u32); 4] = [(1280, 720), (1920, 1080), (640, 480), (1280, 960)];
+
+/// Barrel distortion at `strength` of the most the radial model can carry at
+/// these intrinsics, where 0 is a perfect lens and 1 is the edge of the cliff.
+///
+/// The cliff is real and it is close. `r + k1 r^3` stops rising at
+/// `r = sqrt(-1/(3 k1))`; past that peak, two directions land on the same pixel
+/// and pixels beyond it have no ray at all — not a strong lens but a polynomial
+/// outside its range, and `Camera::ray` returns nonsense there. The renderer
+/// clips to twice the frame, so the model has to stay monotonic out to twice
+/// the corner radius, which is what pins `k1` to `1 / (12 r^2)` at the limit.
+///
+/// A wide camera has a large corner radius, so the wider the camera the less
+/// distortion it can carry before its own corners fall off the far side. That
+/// is not a quirk of this simulation; it is why the design has a separate
+/// fisheye model for anything past about 120 degrees.
+fn barrel(intrinsics: &Intrinsics, strength: f64, tangential: bool) -> Lens {
+    let corner = ((0.5 * intrinsics.width as f64 / intrinsics.fx).powi(2)
+        + (0.5 * intrinsics.height as f64 / intrinsics.fy).powi(2))
+    .sqrt();
+
+    Lens::RadialTangential {
+        k1: -strength.clamp(0.0, 1.0) / (12.0 * corner * corner),
+        k2: 0.0,
+        // A trace of tangential distortion on one camera, so that the terms are
+        // not silently untested by every camera having a perfectly centred
+        // sensor.
+        p1: if tangential { 0.0004 } else { 0.0 },
+        p2: if tangential { -0.0003 } else { 0.0 },
     }
 }
 
@@ -181,23 +228,35 @@ impl Room {
 /// checkerboard. A triangle spanning a whole wall runs from just in front of
 /// the camera to the far side of the room, and a rasteriser interpolating depth
 /// across it in screen space is at its least accurate exactly there.
+///
+/// `facing` is which side of the surface is the inside of the room. It decides
+/// the winding, and so which way the normals end up pointing, which is what
+/// lets the renderer discard the half of the room it is looking at the back of.
 fn tile(
     mesh: &mut Mesh,
     origin: Point3<f64>,
     across: Vector3<f64>,
     up: Vector3<f64>,
     step: f64,
+    facing: Vector3<f64>,
     color: impl Fn(i32, i32) -> [f32; 3],
 ) {
     let columns = (across.norm() / step).round().max(1.0) as i32;
     let rows = (up.norm() / step).round().max(1.0) as i32;
+    let a = across / columns as f64;
+    let b = up / rows as f64;
+    let forwards = a.cross(&b).dot(&facing) >= 0.0;
 
     for row in 0..rows {
         for column in 0..columns {
-            let a = across / columns as f64;
-            let b = up / rows as f64;
             let at = origin + a * column as f64 + b * row as f64;
-            mesh.add_quad([at, at + a, at + a + b, at + b], color(column, row));
+            let corners = [at, at + a, at + a + b, at + b];
+            let corners = if forwards {
+                corners
+            } else {
+                [corners[0], corners[3], corners[2], corners[1]]
+            };
+            mesh.add_quad(corners, color(column, row));
         }
     }
 }

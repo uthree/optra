@@ -73,11 +73,19 @@ pub struct Triangulation {
     pub inliers: Vec<usize>,
     /// Weight each contributing camera carried, normalized to sum to one.
     pub weights: Vec<(usize, f64)>,
-    /// Position covariance implied by the rays, in square metres.
+    /// Position covariance implied by the rays, in square metres, or `None`
+    /// when they did not constrain the point at all.
     ///
     /// Implied is the word: it is built from the uncertainty each ray *claimed*
     /// and knows nothing about whether they turned out to agree.
-    pub covariance: Matrix3<f64>,
+    ///
+    /// `None` is the parallel-ray case. Rays that never converge leave the
+    /// point free to slide along them, the normal matrix is singular, and there
+    /// is no covariance to report — which is a statement about the geometry and
+    /// not a missing value. It has to stay distinguishable from a small
+    /// covariance, because those two are opposites and [`Triangulation::sigma`]
+    /// is what stands between a user and a joint nothing located.
+    pub covariance: Option<Matrix3<f64>>,
     /// Sum of each inlier.s squared residual measured in units of the noise it
     /// claimed, and the degrees of freedom that sum was taken over.
     ///
@@ -114,8 +122,16 @@ impl Triangulation {
     /// one that says how much this joint can be believed. Two cameras twenty
     /// degrees apart agree perfectly and still leave the point free to slide
     /// along the bisector; the residual cannot see that and this can.
+    ///
+    /// Infinite when the rays did not constrain the point. The limit as rays
+    /// approach parallel is unbounded, so infinity is where the sequence was
+    /// already heading — and every gate downstream is written as "reject a
+    /// sigma above the limit", which infinity fails and zero passes.
     pub fn sigma(&self) -> f64 {
-        self.covariance
+        let Some(covariance) = self.covariance else {
+            return f64::INFINITY;
+        };
+        covariance
             .symmetric_eigenvalues()
             .iter()
             .fold(0.0, |worst: f64, value| worst.max(*value))
@@ -187,10 +203,13 @@ pub fn triangulate(
     // cameras rather than just the pair that happened to seed the hypothesis,
     // then polish that against the objective the answer is judged by.
     let linear = solve(cameras, observations, &inliers).unwrap_or(seed);
-    let polished = polish(cameras, observations, &inliers, linear);
-    let (point, covariance, metric) = match polished {
-        Some(polished) => polished,
-        None => (linear, Matrix3::zeros(), Vec::new()),
+    // A failed polish is the rays not constraining the point, and the zeroed
+    // covariance a first version substituted here said the opposite of that:
+    // zero is perfect certainty, so the one configuration the uncertainty gate
+    // exists to catch was the one configuration that sailed through it.
+    let (point, covariance, metric) = match polish(cameras, observations, &inliers, linear) {
+        Some((point, covariance, metric)) => (point, Some(covariance), metric),
+        None => (linear, None, Vec::new()),
     };
 
     let residuals: Vec<(usize, f64)> = inliers
@@ -429,6 +448,7 @@ mod tests {
     use super::*;
     use crate::geometry::camera::Intrinsics;
     use crate::geometry::lens::Lens;
+    use nalgebra::{Isometry3, Translation3};
 
     fn corner_camera(x: f64, z: f64, width: u32, fov_degrees: f64) -> Camera {
         Camera::look_at(
@@ -472,6 +492,67 @@ mod tests {
             "recovered {:?}, expected {truth:?}",
             result.point
         );
+    }
+
+    /// A triangulation with no covariance is one whose rays did not constrain
+    /// the point, and the number that stands for that has to be unbounded.
+    /// Zero is its opposite — perfect certainty — and every gate downstream is
+    /// written as "reject a sigma above the limit", which zero passes.
+    #[test]
+    fn a_point_the_rays_did_not_constrain_reports_an_unbounded_uncertainty() {
+        let unconstrained = Triangulation {
+            point: Point3::origin(),
+            residuals: Vec::new(),
+            inliers: vec![0, 1],
+            weights: Vec::new(),
+            covariance: None,
+            chi_square: 0.0,
+            dof: 1.0,
+        };
+        assert!(!unconstrained.sigma().is_finite());
+        assert!(unconstrained.sigma() > 0.0);
+    }
+
+    /// Two cameras pointing the same way see a point along the same direction
+    /// from two places, and where it sits along that direction is a question
+    /// neither of them asked.
+    ///
+    /// This does not reach the branch above — the linear solve is singular for
+    /// the same reason and refuses first, so the answer here is no point at all
+    /// rather than an unbounded one. Both are correct and the test is written
+    /// to accept either, because which one it takes is an implementation
+    /// detail and "a confident position" is the answer that would be wrong.
+    #[test]
+    fn parallel_rays_do_not_produce_a_confident_point() {
+        let straight = Camera::look_at(
+            Intrinsics::from_fov(1280, 720, 70f64.to_radians()),
+            Lens::default(),
+            Point3::new(0.0, 2.4, -3.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Vector3::y(),
+        );
+        // The same optics and the same orientation, moved sideways. A pixel on
+        // one is the same world direction as that pixel on the other.
+        let beside = Camera::new(
+            straight.intrinsics,
+            straight.lens,
+            Isometry3::from_parts(Translation3::new(0.6, 2.4, -3.0), straight.pose.rotation),
+        );
+        let cameras = vec![straight, beside];
+
+        let pixel = Point2::new(640.0, 360.0);
+        let observations = vec![
+            Observation::new(0, &cameras[0], pixel, 0.9, 1.0),
+            Observation::new(1, &cameras[1], pixel, 0.9, 1.0),
+        ];
+
+        if let Some(result) = triangulate(&cameras, &observations, 1.0) {
+            assert!(
+                !result.sigma().is_finite(),
+                "parallel rays placed a point to within {} m",
+                result.sigma()
+            );
+        }
     }
 
     #[test]

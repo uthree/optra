@@ -131,7 +131,10 @@ pub fn render(mesh: &Mesh, camera: &Camera, options: &RenderOptions) -> Image {
     );
     let mut color = vec![options.background; w * h];
     // Inverse depth, so that "nothing here yet" is zero and nearer is larger.
-    let mut depth = vec![0.0f64; w * h];
+    // In `f32` because the buffer is the largest thing here and most of the
+    // time goes into touching it; a room is a few metres across and depth
+    // ordering does not need seven more digits than that.
+    let mut depth = vec![0.0f32; w * h];
 
     let light = options.light.normalize();
     let frustum = frustum(&large);
@@ -256,7 +259,7 @@ fn clip(polygon: &mut Vec<Fragment>, scratch: &mut Vec<Fragment>, plane: Plane) 
 #[allow(clippy::too_many_arguments)]
 fn draw(
     color: &mut [[f32; 3]],
-    depth: &mut [f64],
+    depth: &mut [f32],
     w: usize,
     h: usize,
     camera: &Camera,
@@ -264,6 +267,11 @@ fn draw(
     light: Vector3<f64>,
     options: &RenderOptions,
 ) {
+    // Nothing is back-face culled. Culling would need every builder here to
+    // promise a winding, and the z-buffer settles the same question without
+    // one; measured, it was worth about a tenth of the frame time against the
+    // cost of a whole invariant to keep. `shade` turns the normal to face the
+    // camera for the same reason.
     let mut screen = [[0.0f64; 2]; 3];
     let mut inverse_z = [0.0f64; 3];
     let mut shaded = [[0.0f32; 3]; 3];
@@ -313,10 +321,10 @@ fn draw(
             }
 
             let index = y * w + x;
-            if iz <= depth[index] {
+            if iz as f32 <= depth[index] {
                 continue;
             }
-            depth[index] = iz;
+            depth[index] = iz as f32;
 
             let weights = [
                 w0 * inverse_z[0] / iz,
@@ -425,11 +433,33 @@ fn downsample(
     rgb
 }
 
+/// Adds sensor noise.
+///
+/// Not [`Rng::normal`], which is a logarithm, a square root and a sine per pair
+/// of draws. There are two and a half million channels in a 720p frame and the
+/// harness renders five hundred of them, and a Box-Muller transform per channel
+/// cost more than everything else in the renderer put together — an empty room
+/// took thirty-seven milliseconds a frame with not one triangle in it.
+///
+/// Four bytes of one draw, summed, is Irwin-Hall with n = 4: close enough to
+/// Gaussian that eight-bit noise cannot tell the difference, and one call to
+/// the generator serves two channels.
 fn add_noise(rgb: &mut [u8], sigma: f32, seed: u64) {
+    /// Standard deviation of the sum of four uniform bytes.
+    const SPREAD: f32 = 147.8;
+    /// Where that sum is centred.
+    const MIDDLE: i32 = 510;
+
     let mut rng = Rng::new(seed);
-    for channel in rgb.iter_mut() {
-        let noisy = *channel as f32 + rng.normal() as f32 * sigma * 255.0;
-        *channel = noisy.round().clamp(0.0, 255.0) as u8;
+    for pair in rgb.chunks_mut(2) {
+        let draw = rng.next_u64().to_le_bytes();
+        for (channel, half) in pair.iter_mut().zip(draw.as_chunks::<4>().0) {
+            let sum: i32 = half.iter().map(|byte| *byte as i32).sum();
+            let noise = (sum - MIDDLE) as f32 / SPREAD;
+            *channel = (*channel as f32 + noise * sigma * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
     }
 }
 
