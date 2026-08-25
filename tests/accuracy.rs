@@ -77,7 +77,15 @@ const CAMERAS: usize = 4;
 /// frame rate of every one of them.
 const RATE: f64 = 20.0;
 /// How long the walk lasts, in seconds.
-const LENGTH: f64 = 7.0;
+///
+/// Long enough that *half* of it settles the skeleton, because the halves are
+/// used for different things: the bones are measured from the first and the fit
+/// is scored on the second. Seven seconds was enough when one pass did both,
+/// and three and a half is not — the measurement came back with 82% of the
+/// skeleton. Twelve is where it returns to all of it, and this leaves a margin,
+/// since a real pose model drops joints and the meter gets fewer samples per
+/// second than the projected walk hands it.
+const LENGTH: f64 = 14.0;
 
 // ---------------------------------------------------------------------------
 // Where the keypoints come from
@@ -571,11 +579,17 @@ fn table(report: &Report) -> String {
 
 /// Runs one walk end to end and scores it.
 ///
-/// The bone measurement happens over the whole walk before anything is fitted,
-/// which is how a real session behaves: a body is measured over minutes and the
-/// fit only starts holding the skeleton to it once the lengths have settled.
-/// Fitting against a skeleton measured from the first two seconds would be
-/// scoring the measurement rather than the fit.
+/// The walk is split in two. The skeleton is measured over the first half and
+/// the fit and the filter are scored over the second, so that no tick is ever
+/// held to a skeleton its own reconstruction helped to measure.
+///
+/// The split is the point. A real session measures a body over minutes and then
+/// goes on fitting to it, so measuring first is the realistic order — but
+/// measuring over the *whole* walk and then fitting the same frames again, as
+/// this used to, quietly hands each frame a skeleton that already knows about
+/// it. The effect is small, because a bone length is a median over thousands of
+/// samples and one pose barely moves it, but "small" is a claim and this is
+/// cheaper than defending it.
 fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
     let cameras = scene.cameras(CAMERAS);
     let start = Instant::now() + Duration::from_secs(60);
@@ -634,9 +648,10 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
         reconstructions.push((t, reconstruction));
     }
 
+    let split = reconstructions.len() / 2;
     let measure = MeasureOptions::default();
     let mut meter = BoneMeter::new(measure.clone());
-    for (_, reconstruction) in &reconstructions {
+    for (_, reconstruction) in &reconstructions[..split] {
         meter.observe(reconstruction);
     }
     let skeleton = meter.finish();
@@ -644,7 +659,7 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
 
     let mut fitter = Fitter::new(FitOptions::default());
     let mut filter = PoseFilter::new(FilterOptions::default());
-    for (t, reconstruction) in &reconstructions {
+    for (t, reconstruction) in &reconstructions[split..] {
         let posture = scene.posture(*t);
         let fitted = fitter.fit(reconstruction, &skeleton);
         let smoothed = filter.push(&fitted);
