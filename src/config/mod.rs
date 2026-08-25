@@ -228,14 +228,29 @@ pub struct FusionConfig {
     pub enabled: bool,
     /// Rate of the fusion clock, in hertz.
     pub rate_hz: u32,
-    /// How far behind the slowest camera's measured delay the clock runs, in
-    /// milliseconds.
+    /// Margin the fusion clock keeps on top of what the cameras are measured
+    /// to be delivering, in milliseconds.
     ///
     /// Interpolating a camera onto an instant needs a frame after it, so the
-    /// clock has to sit back far enough that one has arrived. Too small and
-    /// cameras drop out of ticks; too large and the prediction has further to
-    /// reach. One frame interval of the slowest camera is the right size.
+    /// clock sits back far enough that one has arrived. How far that is is
+    /// measured rather than configured — it is whatever the latest camera is
+    /// actually managing — and this is the headroom on top, absorbing the
+    /// ordinary tick-to-tick variation in when frames land.
     pub align_slack_ms: u32,
+    /// How far behind real time the fusion clock will ever sit, in
+    /// milliseconds.
+    ///
+    /// The clock follows whichever camera delivers latest, because a camera it
+    /// does not wait for is a camera that drops in and out of ticks — and a
+    /// joint reconstructed from a different set of cameras every few ticks
+    /// moves by the disagreement between them each time the set changes, which
+    /// is the calibration error and is nothing like noise that smoothing can
+    /// remove.
+    ///
+    /// This is where waiting stops being worth it. A camera later than this is
+    /// left out of the reconstruction entirely and said so in the Tracking
+    /// panel, which is at least a decision the user can act on.
+    pub max_lag_ms: u32,
     /// Keypoint confidence below which a ray is not used.
     pub min_confidence: f32,
     /// Positional uncertainty past which a joint is withheld, in metres.
@@ -261,6 +276,7 @@ impl Default for FusionConfig {
             enabled: true,
             rate_hz: 60,
             align_slack_ms: 40,
+            max_lag_ms: 220,
             min_confidence: 0.3,
             max_joint_sigma: 0.10,
             prediction_ms: 20,

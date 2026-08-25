@@ -5,13 +5,21 @@
 //! hold the body to the measurement, filter, publish.
 //!
 //! The clock deliberately runs behind real time. Interpolating a camera onto an
-//! instant needs a frame *after* that instant, and cameras hand their frames
-//! over late by an amount the calibration measured — so the tick sits far
-//! enough back that even the slowest camera has already delivered the frame
-//! that follows it. The lag is not a loss: the prediction stage has to
-//! compensate for a delay several times larger anyway, and predicting forward
-//! from a properly aligned reconstruction beats fusing rays taken at three
-//! different instants.
+//! instant needs a frame *after* that instant, so the tick sits far enough back
+//! that even the latest camera has already delivered the frame that follows it.
+//! The lag is not a loss: the prediction stage has to compensate for a delay
+//! several times larger anyway, and predicting forward from a properly aligned
+//! reconstruction beats fusing rays taken at three different instants.
+//!
+//! How far back that is is measured rather than configured. It depends on the
+//! model each camera is running, the resolution it is running at and what else
+//! is on the GPU, none of which is known when the thread starts, and getting it
+//! wrong is not a small error: a camera the clock does not wait for does not
+//! quietly degrade, it drops in and out of ticks, and a joint reconstructed
+//! from a different set of cameras every few ticks moves by the disagreement
+//! between them each time the set changes. That disagreement is the calibration
+//! error, it is centimetres, and it is a square wave between two different
+//! right answers rather than noise any filter can take out.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -185,6 +193,10 @@ impl Fusion {
                     .filter(|estimate| estimate.is_confident())
                     .map(|estimate| estimate.latency)
                     .unwrap_or_default(),
+                behind: 0.0,
+                admitted: true,
+                flipping: None,
+                lateness: None,
                 aligned: 0.0,
                 weight: 0.0,
                 rejected: 0.0,
@@ -231,6 +243,16 @@ struct Tracked {
     poses: Arc<PoseChannel>,
     camera: Camera,
     latency: Duration,
+    /// Worst recent staleness of this camera.s newest frame, in seconds. Rises
+    /// at once and decays slowly, so the clock is set by what the camera does
+    /// on a bad tick rather than on a lucky one.
+    behind: f64,
+    /// Whether the fusion clock waits for this camera at all.
+    admitted: bool,
+    /// When the admission decision last started wanting to change.
+    flipping: Option<Instant>,
+    /// Set when this camera is too far behind to be waited for.
+    lateness: Option<String>,
     aligned: f32,
     weight: f32,
     rejected: f32,
@@ -238,6 +260,13 @@ struct Tracked {
 }
 
 impl Tracked {
+    /// How far back the clock has to sit for this camera to have a frame after
+    /// the tick: what its timestamps are early by, plus how stale its newest
+    /// frame gets, plus the margin.
+    fn wait(&self, slack: Duration) -> Duration {
+        self.latency + Duration::from_secs_f64(self.behind.max(0.0)) + slack
+    }
+
     /// Adjusts the calibrated optics to the resolution the camera is actually
     /// running at.
     ///
@@ -276,6 +305,125 @@ impl Tracked {
     }
 }
 
+/// How long the worst recent delivery gap takes to halve, in seconds.
+///
+/// The clock follows the latest camera, and following it back down quickly
+/// would mean re-tightening on one lucky moment and dropping every camera out
+/// again on the next ordinary one. Rising is instant; falling is deliberate.
+const LAG_HALF_LIFE: f64 = 4.0;
+
+/// How long an admission decision has to be wanted before it is taken.
+///
+/// Long, because the decision is which cameras are reconstructing the body,
+/// and changing it moves the body. A hiccup must not cost a camera.
+const ADMISSION_DWELL: Duration = Duration::from_secs(2);
+
+/// How far back the fusion clock has to sit for the cameras to answer it.
+///
+/// Measured every tick rather than assumed once at startup. What matters is
+/// not the delay the calibration attributed to a camera's timestamps but how
+/// stale that camera's newest frame actually is, which depends on the model it
+/// is running, the resolution it is running at and what else is on the GPU —
+/// none of which is known when the thread starts.
+fn follow_cameras(
+    tracked: &mut [Tracked],
+    now: Instant,
+    dt: f64,
+    config: &FusionConfig,
+) -> Duration {
+    let slack = Duration::from_millis(config.align_slack_ms as u64);
+    let ceiling = Duration::from_millis(config.max_lag_ms.max(config.align_slack_ms) as u64);
+    let decay = 0.5f64.powf(dt / LAG_HALF_LIFE);
+
+    for camera in tracked.iter_mut() {
+        // How stale this camera's newest frame is. The clock has to sit at
+        // least this far back, or there is nothing after the tick to
+        // interpolate towards. A camera that has delivered nothing at all is
+        // treated as being past the ceiling rather than as being on time.
+        let behind = camera
+            .poses
+            .span()
+            .map(|(_, newest)| now.saturating_duration_since(newest).as_secs_f64())
+            .unwrap_or_else(|| ceiling.as_secs_f64());
+        camera.behind = behind.max(camera.behind * decay);
+    }
+
+    // Decided before the lag is: a camera nobody is waiting for must not be
+    // what everybody waits for.
+    admit(tracked, now, ceiling, slack);
+
+    tracked
+        .iter()
+        .filter(|camera| camera.admitted)
+        .map(|camera| camera.wait(slack))
+        .max()
+        .unwrap_or(slack)
+        .clamp(slack, ceiling)
+}
+
+/// Decides which cameras the clock is prepared to wait for.
+///
+/// A camera either is waited for or is not. What it must never do is be waited
+/// for on some ticks and not others, which is what the old fixed clock left it
+/// doing: every joint it votes on moves by the disagreement between it and the
+/// rest each time it joins or leaves, that disagreement is the calibration
+/// error and is centimetres, and it happens at whatever rate the camera is
+/// missing ticks. That is not noise a filter can take out — it is a square
+/// wave between two different right answers, and it is what shaking looks like
+/// from the inside.
+fn admit(tracked: &mut [Tracked], now: Instant, ceiling: Duration, slack: Duration) {
+    // Triangulation needs two cameras, so the two least late are waited for
+    // whatever they cost. A late body beats no body, and the alternative to
+    // waiting for them is not a faster body but an empty room.
+    let mut order: Vec<usize> = (0..tracked.len()).collect();
+    order.sort_by_key(|index| tracked[*index].wait(slack));
+    let essential = &order[..order.len().min(2)];
+
+    let wanted: Vec<bool> = tracked
+        .iter()
+        .enumerate()
+        .map(|(index, camera)| {
+            // Hysteresis: a camera has to come back comfortably inside the
+            // ceiling to be waited for again, not merely back to the edge of it.
+            let limit = if camera.admitted {
+                ceiling
+            } else {
+                ceiling.mul_f64(0.85)
+            };
+            essential.contains(&index) || camera.wait(slack) <= limit
+        })
+        .collect();
+
+    for (camera, wanted) in tracked.iter_mut().zip(wanted) {
+        if wanted == camera.admitted {
+            camera.flipping = None;
+            continue;
+        }
+
+        let since = *camera.flipping.get_or_insert(now);
+        if now.duration_since(since) < ADMISSION_DWELL {
+            continue;
+        }
+
+        let need = camera.wait(slack);
+        camera.admitted = wanted;
+        camera.flipping = None;
+        camera.lateness = (!wanted).then(|| {
+            format!(
+                "delivering {:.0} ms behind real time, and the fusion clock waits at most {:.0} ms",
+                need.as_secs_f64() * 1000.0,
+                ceiling.as_secs_f64() * 1000.0,
+            )
+        });
+        tracing::info!(
+            camera = %camera.id,
+            behind_ms = need.as_secs_f64() * 1000.0,
+            "camera {} the fusion clock",
+            if wanted { "rejoined" } else { "left" },
+        );
+    }
+}
+
 fn run(
     channel: Arc<FusionChannel>,
     config: FusionConfig,
@@ -283,20 +431,12 @@ fn run(
     body: Skeleton,
     global: Shutdown,
 ) {
-    // How far behind real time the clock runs: enough that the camera which
-    // reports latest has still delivered the frame after the tick.
-    let slowest = tracked
-        .iter()
-        .map(|camera| camera.latency)
-        .max()
-        .unwrap_or_default();
-    let lag = slowest + Duration::from_millis(config.align_slack_ms as u64);
+    tracing::info!(cameras = tracked.len(), "fusion started");
 
-    tracing::info!(
-        cameras = tracked.len(),
-        lag_ms = lag.as_secs_f32() * 1000.0,
-        "fusion started"
-    );
+    // How far behind real time the clock runs, followed rather than fixed. It
+    // starts at the margin and grows to whatever the cameras turn out to need.
+    let mut lag = Duration::from_millis(config.align_slack_ms as u64);
+    let period = 1.0 / f64::from(config.rate_hz.max(1));
 
     let fuse_options = config.fuse_options();
     let measure_options = MeasureOptions::default();
@@ -317,6 +457,20 @@ fn run(
 
     while !channel.stop.is_cancelled() && !global.is_cancelled() {
         let now = Instant::now();
+        // The clock may slow down but it must never run backwards. A
+        // reconstruction stamped before the last one gives every stage after it
+        // a negative time step, and the honest response to a camera that has
+        // just got slower is to let real time catch up rather than to rewind.
+        // Capped at half a tick per tick, the clock falls behind at half speed
+        // until it has covered the new delay, which takes a fraction of a
+        // second and looks like nothing.
+        let want = follow_cameras(&mut tracked, now, period, &config);
+        let step = Duration::from_secs_f64(period * 0.5);
+        lag = if want > lag {
+            lag + step.min(want - lag)
+        } else {
+            want
+        };
         let at = now - lag;
 
         let mut cameras = Vec::with_capacity(tracked.len());
@@ -324,6 +478,15 @@ fn run(
 
         for camera in tracked.iter_mut() {
             let index = cameras.len();
+
+            // A camera the clock is not waiting for takes no part at all. It is
+            // the flickering that hurts, not the absence.
+            if !camera.admitted {
+                camera.aligned = ema(camera.aligned, 0.0);
+                cameras.push(camera.camera.clone());
+                continue;
+            }
+
             // The frame that shows the world at `at` is stamped a latency
             // later, because that is when it arrived rather than when the light
             // landed on the sensor.
@@ -336,6 +499,7 @@ fn run(
             };
 
             camera.aligned = ema(camera.aligned, if usable { 1.0 } else { 0.0 });
+            // After the resolution check, which may have rescaled the optics.
             cameras.push(camera.camera.clone());
 
             if let (Some((before, after)), true) = (bracket, usable) {
@@ -458,7 +622,7 @@ fn publish(
             weight: camera.weight,
             rejected: camera.rejected,
             latency_ms: camera.latency.as_secs_f32() * 1000.0,
-            problem: camera.problem.clone(),
+            problem: camera.problem.clone().or_else(|| camera.lateness.clone()),
         })
         .collect();
     stats.warning = warning(&stats, skeleton, measure);
@@ -592,6 +756,10 @@ mod tests {
             poses: Arc::new(PoseChannel::default()),
             camera: camera(),
             latency: Duration::ZERO,
+            behind: 0.0,
+            admitted: true,
+            flipping: None,
+            lateness: None,
             aligned: 0.0,
             weight: 0.0,
             rejected: 0.0,
@@ -621,6 +789,131 @@ mod tests {
         let mut camera = tracked("cam0");
         assert!(!camera.match_resolution(640, 480));
         assert!(camera.problem.is_some());
+    }
+
+    /// Hands a camera one frame stamped at `captured_at`, which is all
+    /// [`follow_cameras`] looks at.
+    fn feed(camera: &Tracked, captured_at: Instant) {
+        camera.poses.publish(crate::pipeline::PoseFrame {
+            seq: 0,
+            captured_at,
+            width: 1280,
+            height: 720,
+            detection: None,
+            keypoints: crate::infer::traits::Keypoints2d::default(),
+        });
+    }
+
+    fn slack(config: &FusionConfig) -> Duration {
+        Duration::from_millis(config.align_slack_ms as u64)
+    }
+
+    fn ceiling(config: &FusionConfig) -> Duration {
+        Duration::from_millis(config.max_lag_ms as u64)
+    }
+
+    /// The clock has to sit behind the camera that hands its frames over last,
+    /// because interpolating onto a tick needs a frame after it.
+    #[test]
+    fn the_clock_waits_for_the_camera_that_delivers_latest() {
+        let config = FusionConfig::default();
+        let base = Instant::now();
+        let mut cameras = vec![tracked("cam0"), tracked("cam1"), tracked("cam2")];
+
+        feed(&cameras[0], base);
+        feed(&cameras[1], base);
+        feed(&cameras[2], base - Duration::from_millis(100));
+
+        let lag = follow_cameras(&mut cameras, base, 1.0 / 60.0, &config);
+        assert_eq!(lag, Duration::from_millis(100) + slack(&config));
+    }
+
+    /// A camera nobody could wait for is left out, not waited for half the
+    /// time. Being in the reconstruction on some ticks and not others moves
+    /// every joint it votes on by the calibration disagreement each time the
+    /// set changes, which is the shaking this is all about.
+    #[test]
+    fn a_camera_too_late_to_wait_for_is_left_out_rather_than_flickering() {
+        let config = FusionConfig::default();
+        let base = Instant::now();
+        let mut cameras = vec![tracked("cam0"), tracked("cam1"), tracked("cam2")];
+
+        feed(&cameras[0], base);
+        feed(&cameras[1], base);
+        feed(&cameras[2], base - Duration::from_millis(400));
+
+        // One slow tick is not a verdict, so it is still being waited for and
+        // the clock is pinned at its ceiling.
+        let lag = follow_cameras(&mut cameras, base, 1.0 / 60.0, &config);
+        assert!(cameras[2].admitted);
+        assert_eq!(lag, ceiling(&config));
+
+        // Once it has been slow for long enough, it goes.
+        let later = base + ADMISSION_DWELL + Duration::from_millis(1);
+        feed(&cameras[0], later);
+        feed(&cameras[1], later);
+        let lag = follow_cameras(&mut cameras, later, 1.0 / 60.0, &config);
+
+        assert!(!cameras[2].admitted);
+        assert!(
+            cameras[2].lateness.is_some(),
+            "and the panel should be able to say why"
+        );
+        assert_eq!(
+            lag,
+            slack(&config),
+            "with the straggler out, the clock tightens back up to the two that are keeping up"
+        );
+    }
+
+    /// Triangulation needs two cameras. When only two are left, waiting for
+    /// them is not a choice: the alternative is not a faster body but no body.
+    #[test]
+    fn the_last_two_cameras_are_waited_for_however_late_they_are() {
+        let config = FusionConfig::default();
+        let base = Instant::now();
+        let mut cameras = vec![tracked("cam0"), tracked("cam1")];
+
+        feed(&cameras[0], base - Duration::from_millis(500));
+        feed(&cameras[1], base - Duration::from_millis(500));
+
+        let mut lag = Duration::ZERO;
+        for tick in 0..300u64 {
+            lag = follow_cameras(
+                &mut cameras,
+                base + Duration::from_millis(tick * 20),
+                1.0 / 60.0,
+                &config,
+            );
+        }
+
+        assert!(cameras.iter().all(|camera| camera.admitted));
+        assert_eq!(lag, ceiling(&config), "clamped, but still every camera");
+    }
+
+    /// The clock is set by what a camera manages on a bad tick, not on a lucky
+    /// one, or it tightens onto one good moment and drops everybody out on the
+    /// next ordinary one.
+    #[test]
+    fn one_early_frame_does_not_tighten_the_clock() {
+        let config = FusionConfig::default();
+        let base = Instant::now();
+        let mut cameras = vec![tracked("cam0"), tracked("cam1")];
+
+        feed(&cameras[0], base - Duration::from_millis(120));
+        feed(&cameras[1], base - Duration::from_millis(120));
+        let slow = follow_cameras(&mut cameras, base, 1.0 / 60.0, &config);
+
+        // Both cameras suddenly deliver on time.
+        let next = base + Duration::from_millis(16);
+        feed(&cameras[0], next);
+        feed(&cameras[1], next);
+        let after = follow_cameras(&mut cameras, next, 1.0 / 60.0, &config);
+
+        assert!(
+            after > slow - Duration::from_millis(5),
+            "one good tick moved the clock from {slow:?} to {after:?}"
+        );
     }
 
     #[test]

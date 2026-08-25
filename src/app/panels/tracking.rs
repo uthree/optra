@@ -549,9 +549,25 @@ fn settings(ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
         .changed();
     ui.label(
         RichText::new(
-            "How far behind the slowest camera's measured delay the clock runs. It needs \
-             about one frame interval of the slowest camera; less and cameras start \
-             dropping out of ticks.",
+            "Headroom the clock keeps on top of what the cameras are measured to be \
+             delivering. How far back it has to sit is worked out from what they \
+             actually manage; this absorbs the variation between one tick and the next.",
+        )
+        .weak(),
+    );
+
+    ui.add_space(4.0);
+    changed |= ui
+        .add(egui::Slider::new(&mut fusion.max_lag_ms, 60..=500).text("Wait at most (ms)"))
+        .changed();
+    ui.label(
+        RichText::new(
+            "The clock follows whichever camera delivers latest, because a camera it does \
+             not wait for drops in and out of ticks, and a joint reconstructed from a \
+             different set of cameras every few ticks jumps by the disagreement between \
+             them. This is where waiting stops being worth it: a camera later than this is \
+             left out of the reconstruction instead, and said so above. Raise it if a \
+             camera you need keeps being dropped; lower it if the body feels late.",
         )
         .weak(),
     );
