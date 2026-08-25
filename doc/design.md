@@ -1181,6 +1181,29 @@ axis over a few seconds, from the raw reconstruction and only from a head
 keypoint the cameras actually placed, so neither one bad frame nor the fit's own
 guess becomes the verdict.
 
+**Scale is the part worth dwelling on, because nothing else can see it.** A
+uniformly scaled set of cameras is perfectly self-consistent: every ray still
+meets every other ray, every reprojection residual is still zero, and the body
+that comes out is simply the wrong size. The wizard's RMS is happy. The
+agreement factor of 9.2 reads exactly 1.0. Every camera agrees with every other
+camera about a body two-thirds life size. Scale cannot be recovered from the
+cameras at all — it is not a matter of solving harder — and it needs an external
+metric reference, of which the room contains exactly one.
+
+So it is measured by *moving*: how far the headset went against how far the
+cameras thought the head went, over half-second pairs across a five-second
+window, median of the ratios. One is a room solved to life size, and anything
+else is a body that will never line up with an avatar however carefully the
+trackers are calibrated in the game. It needs the user to move, and standing
+still returns nothing rather than the ratio of two noise floors.
+
+Scale is reported above the offset, because a scale error produces an offset
+everywhere except at whatever point the scaling is about — a head 80 cm low over
+feet 28 cm low is not a rig that has moved, it is a room two-thirds the size it
+should be. Reporting the offset first would send a user looking for a camera
+that had been knocked when what they need is to solve the room again, over more
+floor and more height than last time, because that is what pins scale down.
+
 Like the floor, it reports and does not correct. A head half a metre from the
 headset does not mean the trackers should be moved half a metre; it means the
 room profile is wrong and everything built on it is untrustworthy, including
