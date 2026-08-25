@@ -17,12 +17,51 @@
 //! millimetre between ticks, and millimetres of jitter are worth several, which
 //! is the separation that makes the number worth printing.
 //!
-//! The median across joints rather than the mean, so that one badly seen ankle
-//! does not become the whole body's verdict.
+//! Two things about *which* joints, both of which this got wrong at first.
+//!
+//! All four stages measure the same ones, which is the only thing that makes
+//! reading the row left to right mean anything. They did not always: the first
+//! stage could only ever see joints the cameras solved, while the three after
+//! it saw every joint the fit had produced — and the fit invents the ones no
+//! camera saw. So the first number was measured over a dozen jittering
+//! triangulations and the next three over a whole body most of which the
+//! constraints had placed and were holding still.
+//!
+//! The joints measured are the ones a tracker is built from, taken from
+//! [`TrackerRole::needs`] rather than listed again here so that changing what a
+//! tracker is built from cannot quietly stop measuring it. Half of what a pose
+//! model returns — eyes, ears, nose — never reaches a tracker, and a figure
+//! that is mostly about the parts nobody can see move is not about the
+//! complaint. That points `fusion` at `output`, against the direction
+//! everything else runs, which is the price of not keeping a second copy of the
+//! list.
+//!
+//! And the worst joint rather than the median one, which is a reversal. The
+//! median was chosen so that a single badly seen ankle could not become the
+//! whole body's verdict, and that was the wrong instinct twice over. A room
+//! that is shaking is usually shaking on the minority of joints the cameras
+//! actually solved, the rest being invented and therefore smooth by
+//! construction — the panel read `cameras 49 mm, fit 0, smoothed 0, sent 0`
+//! with the skeleton visibly shaking, and a median is how a number does that.
+//! More to the point, over a population where every member is a tracker, a
+//! badly seen ankle *is* the verdict: it is a tracker strapped to somebody's
+//! ankle, and no amount of calm elsewhere makes it wearable.
 
 use nalgebra::Point3;
 
 use crate::models::Joint;
+use crate::output::pose::TrackerRole;
+
+/// Whether this joint ends up inside a tracker that is sent.
+///
+/// The population every meter in this module measures. See the module
+/// documentation for why it is this set rather than every joint a pose model
+/// happens to return.
+pub fn drives_a_tracker(joint: Joint) -> bool {
+    TrackerRole::ALL
+        .iter()
+        .any(|role| role.needs().contains(&joint))
+}
 
 /// How settled one stage of the chain is.
 #[derive(Debug, Clone, Default)]
@@ -83,15 +122,13 @@ impl ShakeMeter {
             }
         }
 
-        if shakes.is_empty() {
+        let Some(worst) = shakes.into_iter().max_by(f64::total_cmp) else {
             return;
-        }
-        shakes.sort_by(f64::total_cmp);
-        let median = shakes[shakes.len() / 2];
-        self.value += (median - self.value) * Self::SMOOTHING;
+        };
+        self.value += (worst - self.value) * Self::SMOOTHING;
     }
 
-    /// The typical joint's tick-to-tick wobble, in metres.
+    /// The worst tracker joint's tick-to-tick wobble, in metres.
     pub fn metres(&self) -> f64 {
         self.value
     }

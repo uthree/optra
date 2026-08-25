@@ -1247,23 +1247,41 @@ metres per second squared moves a joint under a millimetre between ticks and
 millimetres of jitter are worth several, which is the separation that makes it
 worth printing.
 
-The median across joints rather than the mean, so one badly seen ankle is not
-the whole body's verdict, and only over joints present three ticks running, so a
-joint that blinked does not report the gap as shake. The same meter runs at each
-of the four stages and the Tracking panel shows all four numbers in a row. Read
-left to right they say where to look: all four high is the cameras and nothing
-downstream will help; raw high and filtered low is the smoothing doing its job;
-filtered low and sent high is the prediction, which is the one stage here that
-can add movement rather than remove it.
+Only over joints present three ticks running, so a joint that blinked does not
+report the gap as shake. The same meter runs at each of the four stages and the
+Tracking panel shows all four numbers in a row. Read left to right they say
+where to look: all four high is the cameras and nothing downstream will help;
+raw high and filtered low is the smoothing doing its job; filtered low and sent
+high is the prediction, which is the one stage here that can add movement rather
+than remove it.
 
-Every stage measures the same joints: the ones the cameras actually saw. The
-first version did not, and it lied about exactly the case it was built for. The
-fit hands back a whole body whether or not anything was seen, so with 23 of 26
-joints invented the median landed on an invented one — and an invented joint
-barely moves, because it is placed from a skeleton. The row read `cameras 184
-mm, fit 0, smoothed 0, sent 0`, which reads as the fit having cured everything
-and was nothing of the kind. Four numbers about four different populations are
-not comparable, and comparing them is the entire purpose of the row.
+Which joints, and which one of them, both took two attempts.
+
+Every stage has to measure the same joints or the row is four numbers about four
+different populations, and comparing them is its entire purpose. The first
+version did not: the reconstruction can only offer joints the cameras solved,
+while the three stages after it were handed a whole body, because the fit
+invents whatever was missed. So the first number came from a dozen jittering
+triangulations and the next three from a body most of which the constraints had
+placed and were holding still.
+
+The population is the joints a tracker is built from, taken from the tracker
+definitions rather than listed a second time, so that changing what a tracker
+needs cannot quietly stop measuring it. Half of what a pose model returns —
+eyes, ears, nose — never reaches a tracker, and a figure mostly about parts
+nobody can see move is not about the complaint. This points `fusion` at
+`output`, against the direction every other dependency runs, which is the price
+of not keeping a second copy of the list.
+
+And the worst of those joints, not the median, which reverses the original
+choice. The median was picked so a single badly seen ankle could not become the
+whole body's verdict. That was wrong twice. A shaking room shakes on the
+minority of joints the cameras actually solved, the rest being invented and
+therefore smooth by construction, so the median sits among the invented ones and
+reports calm: the panel read `cameras 49 mm, fit 0, smoothed 0, sent 0` with the
+skeleton visibly shaking. And over a population where every member is a tracker,
+a badly seen ankle *is* the verdict — it is a tracker strapped to somebody's
+ankle, and no amount of calm elsewhere makes it wearable.
 
 ### 9.7 Checking the room against the headset
 

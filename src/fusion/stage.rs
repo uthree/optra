@@ -42,7 +42,7 @@ use super::fit::{Fitted, Fitter};
 use super::floor::FloorMeter;
 use super::fuse::{Pose3d, Tally, fuse};
 use super::head::HeadMeter;
-use super::shake::{Shake, ShakeMeter};
+use super::shake::{Shake, ShakeMeter, drives_a_tracker};
 
 /// How often the bone measurement is recomputed, in ticks.
 ///
@@ -832,18 +832,33 @@ struct ShakeMeters {
 }
 
 impl ShakeMeters {
+    /// Every meter is given the same joints — the ones a tracker is built from
+    /// — because the row is read as a comparison between the four and a
+    /// comparison across different populations is not one.
     fn observe(&mut self, raw: &Pose3d, fitted: &Fitted, filtered: &Filtered) {
-        self.raw
-            .observe(raw.iter().map(|(joint, fused)| (joint, fused.point)));
+        self.raw.observe(
+            raw.iter()
+                .filter(|(joint, _)| drives_a_tracker(*joint))
+                .map(|(joint, fused)| (joint, fused.point)),
+        );
         self.fitted.observe(
             fitted
                 .iter()
+                .filter(|(joint, _)| drives_a_tracker(*joint))
                 .map(|(joint, joint_fit)| (joint, joint_fit.point)),
         );
-        self.filtered
-            .observe(filtered.iter().map(|(joint, one)| (joint, one.point)));
-        self.predicted
-            .observe(filtered.iter().map(|(joint, one)| (joint, one.predicted)));
+        self.filtered.observe(
+            filtered
+                .iter()
+                .filter(|(joint, _)| drives_a_tracker(*joint))
+                .map(|(joint, one)| (joint, one.point)),
+        );
+        self.predicted.observe(
+            filtered
+                .iter()
+                .filter(|(joint, _)| drives_a_tracker(*joint))
+                .map(|(joint, one)| (joint, one.predicted)),
+        );
     }
 
     fn shake(&self) -> Shake {
@@ -861,8 +876,12 @@ mod tests {
     use nalgebra::{Point3, Vector3};
 
     use super::*;
+    use crate::fusion::filter::FilteredJoint;
+    use crate::fusion::fit::FittedJoint;
+    use crate::fusion::fuse::FusedJoint;
     use crate::geometry::camera::Intrinsics;
     use crate::geometry::lens::Lens;
+    use crate::models::Joint;
 
     fn camera() -> Camera {
         Camera::look_at(
@@ -1097,5 +1116,105 @@ mod tests {
         }
 
         assert_eq!(warning(&stats, &skeleton, &MeasureOptions::default()), None);
+    }
+
+    /// Runs a body past the meters for long enough to settle, with a
+    /// centimetre of alternating wobble on `shaking` and nothing on the rest.
+    ///
+    /// Every stage is given the same positions on purpose. These tests are
+    /// about what the meters can see, not about what the filter can remove.
+    fn shaken(shaking: &[Joint]) -> Shake {
+        let at = Instant::now();
+        let mut meters = ShakeMeters::default();
+
+        for tick in 0..400 {
+            let wobble = if tick % 2 == 0 { 0.0 } else { 0.01 };
+            let mut raw = Pose3d::empty(at);
+            let mut fitted = Fitted::empty(at);
+            let mut filtered = Filtered::empty(at, Duration::ZERO);
+
+            for joint in Joint::ALL {
+                let shakes = shaking.contains(&joint);
+                let point = Point3::new(if shakes { wobble } else { 0.0 }, 1.0, 0.0);
+
+                raw.set(
+                    joint,
+                    FusedJoint {
+                        point,
+                        sigma: 0.01,
+                        residual: 0.0,
+                        weights: vec![(0, 1.0)],
+                        rejected: Vec::new(),
+                    },
+                );
+                fitted.set(
+                    joint,
+                    FittedJoint {
+                        point,
+                        sigma: 0.01,
+                        inferred: !shakes,
+                        correction: 0.0,
+                    },
+                );
+                filtered.set(
+                    joint,
+                    FilteredJoint {
+                        point,
+                        velocity: Vector3::zeros(),
+                        predicted: point,
+                        lead: 0.0,
+                        sigma: 0.01,
+                        inferred: !shakes,
+                    },
+                );
+            }
+
+            meters.observe(&raw, &fitted, &filtered);
+        }
+
+        meters.shake()
+    }
+
+    fn stages(shake: Shake) -> [(&'static str, f64); 4] {
+        [
+            ("cameras", shake.raw),
+            ("fit", shake.fitted),
+            ("smoothed", shake.filtered),
+            ("sent", shake.predicted),
+        ]
+    }
+
+    /// Why the worst joint and not the middle one.
+    ///
+    /// A shaking room shakes on the joints the cameras actually solved, which
+    /// are the minority; the fit invents the rest and the constraints hold
+    /// those still. Two ankles out of twenty-six is the shape of the real
+    /// report, and every way of summarising a body by its middle hides it —
+    /// the median over the whole body lands among the invented joints, and so
+    /// does the median over the tracker joints alone.
+    #[test]
+    fn two_shaking_ankles_are_not_averaged_away_by_a_calm_body() {
+        // A centimetre alternating differences to twice the gap.
+        for (stage, metres) in stages(shaken(&[Joint::LeftAnkle, Joint::RightAnkle])) {
+            assert!(
+                metres > 0.019,
+                "two shaking ankles read as {metres:.4} m at the {stage} stage"
+            );
+        }
+    }
+
+    /// Why the tracker joints and not every joint, which is the other half of
+    /// the same decision: reporting the worst of the whole body would hand the
+    /// row to whichever landmark is hardest to see, and the hardest to see are
+    /// the small ones on the face that no tracker is built from. A nose shaking
+    /// its head off is not a complaint anybody in VRChat can make.
+    #[test]
+    fn a_joint_that_never_reaches_a_tracker_cannot_take_over_the_row() {
+        for (stage, metres) in stages(shaken(&[Joint::Nose, Joint::LeftEye, Joint::RightEye])) {
+            assert_eq!(
+                metres, 0.0,
+                "a shaking face read as {metres:.4} m at the {stage} stage"
+            );
+        }
     }
 }
