@@ -1,7 +1,7 @@
 //! Calibration: turning a recorded walk into a solved room.
 //!
 //! The geometry lives in [`crate::geometry`]; this is what feeds it. The walk
-//! is recorded by [`recorder`], and [`solve`] runs it through resection and
+//! is recorded by [`recorder`], and [`mod@solve`] runs it through resection and
 //! joint refinement to produce the cameras.
 
 pub mod latency;

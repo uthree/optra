@@ -118,15 +118,17 @@ fn synthetic_cameras_stream_independently() {
 /// This is what the frame rate assertion above was trying to say and could not:
 /// a source that ignores the rate it was given and hands over frames as fast as
 /// it can breaks every timing assumption downstream, and one that sleeps too
-/// long starves the fusion clock. Asking for five frames a second leaves an
-/// unoptimised build twice the time it needs, so what is left being measured is
-/// the pacing.
+/// long starves the fusion clock. Asking for three frames a second leaves an
+/// unoptimised build three times the wall clock it needs to draw one, so what
+/// is left being measured is the pacing. The margin is deliberately that wide:
+/// a shared CI runner is not a desktop, and the render cost is in the failure
+/// message so a machine too slow to be asked this says so itself.
 #[test]
 fn a_synthetic_camera_holds_the_rate_it_is_asked_for() {
     let mut supervisor = Supervisor::new();
     let mut capture = CaptureManager::default();
 
-    capture.start(&[synthetic("a", 0, 5)], &mut supervisor);
+    capture.start(&[synthetic("a", 0, 3)], &mut supervisor);
     assert!(
         wait_for(Duration::from_secs(5), || capture.channels()[0]
             .stats()
@@ -135,10 +137,11 @@ fn a_synthetic_camera_holds_the_rate_it_is_asked_for() {
         "no frames arrived within 5 s"
     );
 
-    let measured = rate_of(&capture.channels()[0], Duration::from_millis(1600));
+    let measured = rate_of(&capture.channels()[0], Duration::from_millis(2400));
     assert!(
-        (measured - 5.0).abs() < 1.5,
-        "asked for 5 fps and got {measured:.1}"
+        (measured - 3.0).abs() < 0.9,
+        "asked for 3 fps and got {measured:.1}, drawing a frame in {:.0} ms",
+        capture.channels()[0].stats().decode_ms,
     );
 
     capture.stop();

@@ -145,7 +145,8 @@ pub struct Runtime {
 impl Runtime {
     /// Loads `openvr_api.dll` and initializes it as a background application.
     ///
-    /// Fails if this process is already connected; see [`CONNECTED`].
+    /// Fails if this process is already connected: the runtime is initialised once
+    /// per process and a second connection would tear the first one down.
     pub fn connect() -> Result<Self> {
         if CONNECTED.swap(true, Ordering::SeqCst) {
             bail!("this process is already connected to SteamVR");

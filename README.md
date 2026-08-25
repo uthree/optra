@@ -1,5 +1,7 @@
 # Optra
 
+[![CI](https://github.com/uthree/optra/actions/workflows/ci.yml/badge.svg)](https://github.com/uthree/optra/actions/workflows/ci.yml)
+
 Optra turns 2-4 fixed webcams into lower-body tracking for VRChat.
 
 Cameras mounted at the corners of the ceiling watch you from above. Optra runs

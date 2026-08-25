@@ -1,0 +1,67 @@
+# Optra builds for Windows and only for Windows: the capture layer is Media
+# Foundation and DirectShow, and inference runs on DirectML. There is no
+# cross-platform job to add here, and a Linux runner would fail at `cargo
+# check` rather than tell anybody anything.
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A second push to the same branch makes the first run's answer irrelevant.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace costs nothing until something fails, and a test that fails only
+  # on a runner is exactly the one nobody can reproduce locally.
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        # Shared by every step below that builds anything, which is all of them
+        # bar the formatting check. The ONNX Runtime binaries `ort` fetches are
+        # the slow part and they do not change between runs.
+        with:
+          cache-on-failure: true
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Lints
+        # Warnings are errors here and nowhere else. Locally a warning is a note
+        # to yourself mid-edit; on a branch that is about to be merged it is
+        # something nobody will come back to.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        # Debug, which is what a developer runs, and which is the build the
+        # timing-sensitive tests are written against. Everything needing a
+        # camera, a headset, a model download or a stopwatch is marked
+        # `#[ignore]` in the source and does not run here.
+        run: cargo test
+
+      - name: Documentation
+        # The doc comments in this repository carry the reasoning behind most of
+        # the decisions in it, and a broken intra-doc link silently drops a
+        # reader on the floor.
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

@@ -8,7 +8,7 @@
 //!
 //! What comes out here is a seed, not the answer. The linear solve ignores
 //! distortion and weights every correspondence equally, so RANSAC guards it
-//! against bad detections and the bundle refinement in [`super::refine`]
+//! against bad detections and the bundle refinement in [`mod@super::refine`]
 //! finishes the job.
 
 use nalgebra::{
