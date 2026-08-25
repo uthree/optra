@@ -149,10 +149,6 @@ struct Models {
     pose_id: String,
     detector: Box<dyn Detector>,
     pose: Box<dyn Pose2d>,
-    /// Frames where the detector found nobody, which is a different failure
-    /// from a badly placed keypoint and has to be reported as one.
-    blind: usize,
-    frames: usize,
 }
 
 impl Eyes for Models {
@@ -168,17 +164,13 @@ impl Eyes for Models {
         let mut people = Vec::new();
         let mut seats = Vec::new();
         for (seat, detections) in found.iter().enumerate() {
-            self.frames += 1;
-            match detections
+            if let Some(person) = detections
                 .iter()
                 .max_by(|a, b| a.score.total_cmp(&b.score))
                 .copied()
             {
-                Some(person) => {
-                    people.push((views[seat], person));
-                    seats.push(seat);
-                }
-                None => self.blind += 1,
+                people.push((views[seat], person));
+                seats.push(seat);
             }
         }
 
@@ -206,6 +198,20 @@ fn inside(camera: &Camera, x: f64, y: f64) -> bool {
 // ---------------------------------------------------------------------------
 // Scoring
 // ---------------------------------------------------------------------------
+
+/// The value `fraction` of the way through `values`, once sorted.
+///
+/// One definition, used by everything here. Two medians that disagree by one
+/// sample on an even-sized column are two numbers that cannot be compared, and
+/// this file prints them side by side.
+fn quantile(values: &[f64], fraction: f64) -> f64 {
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted[(((sorted.len() - 1) as f64) * fraction).round() as usize]
+}
 
 /// A column of errors, kept so that the median and the tail can be reported.
 ///
@@ -235,13 +241,7 @@ impl Tally {
     }
 
     fn quantile(&self, fraction: f64) -> f64 {
-        if self.errors.is_empty() {
-            return f64::NAN;
-        }
-        let mut sorted = self.errors.clone();
-        sorted.sort_by(f64::total_cmp);
-        let index = ((sorted.len() - 1) as f64 * fraction).round() as usize;
-        sorted[index]
+        quantile(&self.errors, fraction)
     }
 
     fn median(&self) -> f64 {
@@ -302,12 +302,8 @@ impl Spatial {
     /// handful of frames with a limb on the wrong side does not move it.
     fn bias(&self) -> [f64; 3] {
         std::array::from_fn(|axis| {
-            let mut column: Vec<f64> = self.offsets.iter().map(|offset| offset[axis]).collect();
-            if column.is_empty() {
-                return f64::NAN;
-            }
-            column.sort_by(f64::total_cmp);
-            column[column.len() / 2]
+            let column: Vec<f64> = self.offsets.iter().map(|offset| offset[axis]).collect();
+            quantile(&column, 0.5)
         })
     }
 
@@ -391,7 +387,13 @@ struct Report {
     bone_coverage: f32,
     /// Ticks that produced a reconstruction.
     ticks: usize,
-    /// Camera frames where no person was found at all.
+    /// Camera frames where nothing at all came back — the detector found
+    /// nobody, or the person was outside the frame. A different failure from a
+    /// badly placed keypoint, and it has to be reported as one.
+    ///
+    /// Counted in [`walk`] from what each camera handed over rather than inside
+    /// an [`Eyes`], so that both implementations are counted the same way and
+    /// the table cannot claim a run had no frames in it.
     blind: usize,
     frames: usize,
 }
@@ -596,7 +598,9 @@ fn walk(eyes: &mut dyn Eyes, scene: &Scene) -> Report {
         let mut views = Vec::new();
         for (seat, keypoints) in seen.iter().enumerate() {
             score_pixels(&mut report, &cameras[seat], &posture, keypoints);
+            report.frames += 1;
             if keypoints.is_empty() {
+                report.blind += 1;
                 continue;
             }
 
@@ -848,8 +852,14 @@ fn a_simulated_walk_is_reconstructed_from_perfect_keypoints() {
     );
 }
 
-/// A single camera cannot place a joint at all, and this is what says the
-/// number above is a measurement of triangulation rather than of luck.
+/// A single camera cannot place a joint at all.
+///
+/// This is a guard rather than a measurement, and worth being clear about:
+/// `fuse` drops any joint fewer than two cameras offered, so the first half
+/// cannot fail unless somebody removes that rule. It is here because removing
+/// it is an easy thing to do by accident — one ray fixes a direction and a
+/// depth pulled out of nothing, and a chain that accepts it would still produce
+/// plausible-looking numbers everywhere above.
 #[test]
 fn one_camera_cannot_place_a_body_and_four_can() {
     let scene = Scene::default();
@@ -917,15 +927,11 @@ fn the_pose_models_reconstruct_the_body_from_rendered_frames() {
             .expect("the detector should load"),
         pose: optra::infer::arch::build_pose2d(&spec(POSE), provider)
             .expect("the pose model should load"),
-        blind: 0,
-        frames: 0,
     };
 
     let scene = Scene::default();
     let started = Instant::now();
-    let mut report = walk(&mut eyes, &scene);
-    report.blind = eyes.blind;
-    report.frames = eyes.frames;
+    let report = walk(&mut eyes, &scene);
 
     eprint!("{}", table(&report));
     eprintln!(

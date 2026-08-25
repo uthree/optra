@@ -315,8 +315,23 @@ pub fn solve(
                 estimates[slot] = estimate;
             }
 
-            if lags == before || lags.iter().all(Duration::is_zero) {
+            // Nothing moved, so another round would measure the same thing
+            // against the same cameras. This covers the case where no delay was
+            // found at all, since `before` starts out zero.
+            if lags == before {
                 break;
+            }
+
+            // Falling out of the loop still moving means the delays and the
+            // extrinsics were still trading places when the rounds ran out, and
+            // the room being returned is one iterate short of wherever they
+            // were heading. Worth saying: the symptom downstream is a camera a
+            // centimetre or two off with nothing obviously wrong with it.
+            if round + 1 == LATENCY_ROUNDS {
+                tracing::warn!(
+                    ?lags,
+                    "the camera delays had not settled after {LATENCY_ROUNDS} rounds"
+                );
             }
 
             // Re-seeded as well as re-paired. Correcting only the sightings
