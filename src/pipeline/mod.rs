@@ -23,7 +23,7 @@ use crate::config::{CameraConfig, InferenceConfig};
 use crate::infer::Backend;
 use crate::infer::traits::{Detection, ImageView, Keypoints2d};
 use crate::worker::{Shutdown, Supervisor};
-use models::{ModelSet, Slot};
+use models::{ModelSet, Models, Slot};
 
 /// What the pipeline produced for one camera frame.
 #[derive(Debug, Clone)]
@@ -413,7 +413,7 @@ fn assigned_models(worker: &Worker) -> (Vec<String>, Vec<String>) {
 
 /// Runs one camera's frame through detection and pose estimation.
 fn process(
-    set: &mut ModelSet,
+    set: &mut dyn Models,
     state: &mut CameraState,
     inference: &InferenceConfig,
     detector_id: &str,
@@ -514,6 +514,301 @@ fn grow(detection: &Detection, factor: f32, width: u32, height: u32) -> Detectio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::FrameData;
+    use crate::infer::traits::{Detector, Keypoint, Pose2d};
+    use crate::models::Joint;
+
+    /// A detector that finds a person wherever it is told to, and counts how
+    /// often it was asked.
+    struct FakeDetector {
+        found: Option<Detection>,
+        calls: usize,
+    }
+
+    impl Detector for FakeDetector {
+        fn detect(&mut self, images: &[ImageView<'_>]) -> anyhow::Result<Vec<Vec<Detection>>> {
+            self.calls += 1;
+            Ok(images
+                .iter()
+                .map(|_| self.found.into_iter().collect())
+                .collect())
+        }
+
+        fn backend(&self) -> Backend {
+            Backend::Cpu
+        }
+    }
+
+    /// A pose model that reports two keypoints inside whatever box it is
+    /// handed, and remembers the boxes so a test can see which one arrived.
+    #[derive(Default)]
+    struct FakePose {
+        boxes: Vec<Detection>,
+        /// Report nothing, standing in for a person the model cannot place.
+        silent: bool,
+    }
+
+    impl Pose2d for FakePose {
+        fn estimate(
+            &mut self,
+            people: &[(ImageView<'_>, Detection)],
+        ) -> anyhow::Result<Vec<Keypoints2d>> {
+            let mut estimated = Vec::with_capacity(people.len());
+            for (_, person) in people {
+                self.boxes.push(*person);
+                let mut keypoints = Keypoints2d::default();
+                if !self.silent {
+                    let (x, y) = person.center();
+                    for (joint, dx, dy) in [(Joint::Hip, 0.0, 0.0), (Joint::LeftAnkle, 10.0, 20.0)]
+                    {
+                        keypoints.set(
+                            joint,
+                            Keypoint {
+                                x: x + dx,
+                                y: y + dy,
+                                confidence: 0.9,
+                            },
+                        );
+                    }
+                }
+                estimated.push(keypoints);
+            }
+            Ok(estimated)
+        }
+
+        fn backend(&self) -> Backend {
+            Backend::Cpu
+        }
+    }
+
+    /// Whatever the test wants the two lookups to answer.
+    enum Answer<T> {
+        Ready(T),
+        Loading,
+        Failed(String),
+    }
+
+    struct FakeModels {
+        detector: Answer<FakeDetector>,
+        pose: Answer<FakePose>,
+    }
+
+    impl Models for FakeModels {
+        fn detector(&mut self, _id: &str) -> Slot<'_, dyn Detector> {
+            match &mut self.detector {
+                Answer::Ready(detector) => Slot::Ready(detector),
+                Answer::Loading => Slot::Loading,
+                Answer::Failed(err) => Slot::Failed(err),
+            }
+        }
+
+        fn pose(&mut self, _id: &str) -> Slot<'_, dyn Pose2d> {
+            match &mut self.pose {
+                Answer::Ready(pose) => Slot::Ready(pose),
+                Answer::Loading => Slot::Loading,
+                Answer::Failed(err) => Slot::Failed(err),
+            }
+        }
+    }
+
+    fn person() -> Detection {
+        Detection {
+            x1: 100.0,
+            y1: 50.0,
+            x2: 200.0,
+            y2: 350.0,
+            score: 0.9,
+        }
+    }
+
+    fn models(found: Option<Detection>) -> FakeModels {
+        FakeModels {
+            detector: Answer::Ready(FakeDetector { found, calls: 0 }),
+            pose: Answer::Ready(FakePose::default()),
+        }
+    }
+
+    fn detector_calls(models: &FakeModels) -> usize {
+        match &models.detector {
+            Answer::Ready(detector) => detector.calls,
+            _ => 0,
+        }
+    }
+
+    fn boxes(models: &FakeModels) -> Vec<Detection> {
+        match &models.pose {
+            Answer::Ready(pose) => pose.boxes.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn camera_frame(seq: u64) -> Frame {
+        Arc::new(FrameData {
+            width: 640,
+            height: 480,
+            rgb: vec![0; 640 * 480 * 3],
+            captured_at: Instant::now(),
+            seq,
+        })
+    }
+
+    /// Runs `frames` frames through the per-frame work, as the stage does.
+    fn run_frames(models: &mut FakeModels, detect_every: u32, frames: u64) -> Arc<PoseChannel> {
+        let inference = InferenceConfig {
+            detect_every,
+            ..InferenceConfig::default()
+        };
+        let channel = Arc::new(PoseChannel::default());
+        let mut state = super::CameraState::default();
+
+        for seq in 0..frames {
+            process(
+                models,
+                &mut state,
+                &inference,
+                "detector",
+                "pose",
+                &camera_frame(seq),
+                &channel,
+            )
+            .expect("the fakes do not fail");
+        }
+        channel
+    }
+
+    /// The stride is what makes the whole stage affordable — detection is the
+    /// expensive half — and nothing could reach it before, because the only
+    /// way to get a `Detector` was to build an ONNX session.
+    #[test]
+    fn the_detector_runs_on_a_stride_and_not_on_every_frame() {
+        let mut set = models(Some(person()));
+        run_frames(&mut set, 4, 20);
+
+        // Once to acquire, then once every fifth frame after it.
+        assert_eq!(detector_calls(&set), 4, "the stride was not honoured");
+    }
+
+    #[test]
+    fn a_stride_of_zero_detects_on_every_frame() {
+        let mut set = models(Some(person()));
+        run_frames(&mut set, 0, 7);
+        assert_eq!(detector_calls(&set), 7);
+    }
+
+    /// Between detector runs the box comes from the previous keypoints, grown.
+    /// If it did not, the pose model would keep cropping where the person was
+    /// when the detector last looked.
+    #[test]
+    fn the_box_between_detector_runs_comes_from_the_last_keypoints() {
+        let mut set = models(Some(person()));
+        run_frames(&mut set, 10, 3);
+
+        let seen = boxes(&set);
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0], person(), "the first box is the detector's");
+
+        // The keypoints span (150, 200) to (160, 220), grown by a quarter.
+        assert!(
+            seen[1] != person(),
+            "the second frame reused the detector's box"
+        );
+        assert!(seen[1].width() < person().width());
+        assert!(seen[1].x1 < 150.0 && seen[1].x2 > 160.0);
+    }
+
+    /// A frame with nobody in it has to forget the box as well as publish
+    /// nothing. Keeping it would crop the next frame around a person who has
+    /// left, and the detector would never be asked to look again.
+    #[test]
+    fn losing_the_person_clears_the_box_and_detects_again() {
+        let mut set = models(None);
+        let channel = run_frames(&mut set, 100, 3);
+
+        // Once per frame, because `box_hint` is `None` every time and that
+        // makes the detector due regardless of the stride.
+        assert_eq!(detector_calls(&set), 3);
+        assert!(boxes(&set).is_empty(), "the pose model should never run");
+
+        let published = channel.peek().expect("a frame was published");
+        assert!(published.detection.is_none());
+        assert!(published.keypoints.is_empty());
+        assert_eq!(channel.stats().empty, 3);
+        assert_eq!(channel.stats().processed, 0);
+    }
+
+    /// A model still building must not stall the camera or publish last
+    /// frame's keypoints as though they were this frame's.
+    #[test]
+    fn a_pose_model_still_loading_publishes_an_empty_frame() {
+        let mut set = FakeModels {
+            detector: Answer::Ready(FakeDetector {
+                found: Some(person()),
+                calls: 0,
+            }),
+            pose: Answer::Loading,
+        };
+        let channel = run_frames(&mut set, 4, 2);
+
+        let published = channel.peek().expect("a frame was published");
+        assert!(
+            published.detection.is_some(),
+            "the box was found and should be reported"
+        );
+        assert!(published.keypoints.is_empty());
+    }
+
+    #[test]
+    fn a_model_that_failed_to_load_is_named_on_the_camera() {
+        let mut set = FakeModels {
+            detector: Answer::Failed("no such file".to_owned()),
+            pose: Answer::Ready(FakePose::default()),
+        };
+        let channel = run_frames(&mut set, 4, 2);
+
+        let error = channel.stats().last_error.expect("the failure is reported");
+        assert!(error.contains("detector"), "{error}");
+        assert!(error.contains("no such file"), "{error}");
+    }
+
+    /// A detector that cannot run leaves nothing to crop, and the frame goes
+    /// out empty rather than not at all — a camera that stops publishing is a
+    /// camera the fusion clock waits for forever.
+    #[test]
+    fn a_failed_detector_still_publishes_a_frame() {
+        let mut set = FakeModels {
+            detector: Answer::Failed("no such file".to_owned()),
+            pose: Answer::Ready(FakePose::default()),
+        };
+        let channel = run_frames(&mut set, 4, 3);
+
+        assert_eq!(channel.stats().empty, 3);
+        assert!(channel.peek().is_some());
+    }
+
+    /// A pose model that finds nothing inside a real box leaves the detector's
+    /// box as the hint, so the next frame still has somewhere to look.
+    #[test]
+    fn a_silent_pose_model_leaves_the_detector_box_as_the_hint() {
+        let mut set = FakeModels {
+            detector: Answer::Ready(FakeDetector {
+                found: Some(person()),
+                calls: 0,
+            }),
+            pose: Answer::Ready(FakePose {
+                silent: true,
+                ..FakePose::default()
+            }),
+        };
+        run_frames(&mut set, 10, 3);
+
+        let seen = boxes(&set);
+        assert_eq!(seen.len(), 3);
+        assert!(
+            seen.iter().all(|found| *found == person()),
+            "the box should have been carried, got {seen:?}"
+        );
+        assert_eq!(detector_calls(&set), 1, "the stride should still hold");
+    }
 
     fn frame(at: Instant, seq: u64) -> PoseFrame {
         PoseFrame {

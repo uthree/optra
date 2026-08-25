@@ -20,6 +20,30 @@ pub enum Slot<'a, T: ?Sized> {
     Failed(&'a str),
 }
 
+/// What the per-frame work asks of the models it is given.
+///
+/// Two lookups, either of which may answer "not yet" or "never". The trait
+/// exists so that the frame loop can be run against models that are not ONNX
+/// sessions: `ModelSet`'s only way to produce a `Detector` is to build one from
+/// the catalogue on a background thread, so without a seam here the stride, the
+/// carried box and the behaviour on a failed load are reachable only by
+/// downloading a few hundred megabytes and owning a GPU. They are the parts
+/// most likely to be got wrong and they were the parts nothing could reach.
+pub trait Models {
+    fn detector(&mut self, id: &str) -> Slot<'_, dyn Detector>;
+    fn pose(&mut self, id: &str) -> Slot<'_, dyn Pose2d>;
+}
+
+impl Models for ModelSet {
+    fn detector(&mut self, id: &str) -> Slot<'_, dyn Detector> {
+        ModelSet::detector(self, id)
+    }
+
+    fn pose(&mut self, id: &str) -> Slot<'_, dyn Pose2d> {
+        ModelSet::pose(self, id)
+    }
+}
+
 enum Entry<T> {
     Ready(T),
     Loading(Receiver<Result<T, String>>),
