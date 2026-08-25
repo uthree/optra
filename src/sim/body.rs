@@ -12,7 +12,7 @@
 
 use nalgebra::{Point3, Rotation3, Unit, Vector3};
 
-use crate::models::Joint;
+use crate::models::{Joint, JointMap};
 
 /// The skeleton, in metres.
 ///
@@ -99,7 +99,7 @@ impl Anatomy {
 /// its own.
 #[derive(Debug, Clone)]
 pub struct Posture {
-    joints: [Option<Point3<f64>>; Joint::ALL.len()],
+    joints: JointMap<Point3<f64>>,
     pub facing: Vector3<f64>,
     pub right: Vector3<f64>,
 }
@@ -108,28 +108,26 @@ impl Posture {
     fn new(facing: Vector3<f64>) -> Self {
         let facing = facing.normalize();
         Self {
-            joints: [None; Joint::ALL.len()],
+            joints: JointMap::default(),
             facing,
             right: facing.cross(&Vector3::y()).normalize(),
         }
     }
 
     pub fn get(&self, joint: Joint) -> Option<Point3<f64>> {
-        self.joints[joint.index()]
+        self.joints.copied(joint)
     }
 
     fn set(&mut self, joint: Joint, position: Point3<f64>) {
-        self.joints[joint.index()] = Some(position);
+        self.joints.set(joint, position);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Joint, Point3<f64>)> + '_ {
-        Joint::ALL
-            .iter()
-            .filter_map(|joint| self.get(*joint).map(|point| (*joint, point)))
+        self.joints.iter().map(|(joint, point)| (joint, *point))
     }
 
     pub fn count(&self) -> usize {
-        self.joints.iter().filter(|joint| joint.is_some()).count()
+        self.joints.count()
     }
 }
 

@@ -18,13 +18,13 @@ use std::time::{Duration, Instant};
 use nalgebra::Point2;
 
 use crate::geometry::triangulate::pixel_sigma;
-use crate::models::Joint;
+use crate::models::{Joint, JointMap};
 use crate::pipeline::PoseFrame;
 
 /// One camera's keypoints as they were at the fusion tick.
 #[derive(Debug, Clone)]
 pub struct Aligned {
-    joints: [Option<AlignedJoint>; Joint::ALL.len()],
+    joints: JointMap<AlignedJoint>,
     /// Distance from the tick to the nearer of the two frames it fell between.
     pub gap: Duration,
     /// How far apart those two frames were, which is this camera's frame
@@ -49,21 +49,19 @@ pub struct AlignedJoint {
 
 impl Aligned {
     pub fn get(&self, joint: Joint) -> Option<AlignedJoint> {
-        self.joints[joint.index()]
+        self.joints.copied(joint)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Joint, AlignedJoint)> + '_ {
-        Joint::ALL
-            .iter()
-            .filter_map(|joint| self.get(*joint).map(|aligned| (*joint, aligned)))
+        self.joints.iter().map(|(joint, aligned)| (joint, *aligned))
     }
 
     pub fn count(&self) -> usize {
-        self.joints.iter().filter(|joint| joint.is_some()).count()
+        self.joints.count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.count() == 0
+        self.joints.is_empty()
     }
 }
 
@@ -93,12 +91,12 @@ pub fn align(before: &PoseFrame, after: &PoseFrame, at: Instant) -> Aligned {
     // stand-in: the body it belongs to moved this fast.
     let typical = body_speed(before, after, bracket);
 
-    let mut joints = [None; Joint::ALL.len()];
+    let mut joints = JointMap::default();
     for joint in Joint::ALL {
         let start = before.keypoints.get(joint);
         let end = after.keypoints.get(joint);
 
-        joints[joint.index()] = match (start, end) {
+        let resampled = match (start, end) {
             (Some(start), Some(end)) => {
                 let from = point(start.x, start.y);
                 let to = point(end.x, end.y);
@@ -129,6 +127,10 @@ pub fn align(before: &PoseFrame, after: &PoseFrame, at: Instant) -> Aligned {
             (None, Some(only)) => Some(one_sided(only, to_after, typical)),
             (None, None) => None,
         };
+
+        if let Some(resampled) = resampled {
+            joints.set(joint, resampled);
+        }
     }
 
     Aligned {

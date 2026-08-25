@@ -7,6 +7,7 @@
 use anyhow::Result;
 
 use crate::models::Joint;
+use crate::models::keypoints::JointMap;
 
 /// A borrowed RGB8 image.
 #[derive(Clone, Copy)]
@@ -75,38 +76,35 @@ pub struct Keypoint {
 /// absent rather than zeroed: the difference matters to triangulation.
 #[derive(Debug, Clone, Default)]
 pub struct Keypoints2d {
-    joints: [Option<Keypoint>; Joint::ALL.len()],
+    joints: JointMap<Keypoint>,
 }
 
 impl Keypoints2d {
     pub fn get(&self, joint: Joint) -> Option<Keypoint> {
-        self.joints[joint.index()]
+        self.joints.copied(joint)
     }
 
     pub fn set(&mut self, joint: Joint, keypoint: Keypoint) {
-        self.joints[joint.index()] = Some(keypoint);
+        self.joints.set(joint, keypoint);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Joint, Keypoint)> + '_ {
-        Joint::ALL
-            .iter()
-            .filter_map(|joint| self.get(*joint).map(|kp| (*joint, kp)))
+        self.joints.iter().map(|(joint, kp)| (joint, *kp))
     }
 
     pub fn count(&self) -> usize {
-        self.joints.iter().filter(|joint| joint.is_some()).count()
+        self.joints.count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.count() == 0
+        self.joints.is_empty()
     }
 
     /// Mean confidence over the joints that are present.
     pub fn mean_confidence(&self) -> f32 {
         let (sum, count) = self
             .joints
-            .iter()
-            .flatten()
+            .values()
             .fold((0.0, 0usize), |(sum, count), kp| {
                 (sum + kp.confidence, count + 1)
             });

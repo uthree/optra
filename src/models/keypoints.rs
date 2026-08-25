@@ -172,6 +172,80 @@ impl Joint {
     }
 }
 
+/// A value per joint, for the joints that have one.
+///
+/// Six things in this application are a body's worth of something with gaps in
+/// it: the keypoints a model reports, the same resampled onto a fusion tick,
+/// the triangulated pose, the fitted one, the smoothed one, and the
+/// simulator's ground truth. Every one of them had its own array, its own
+/// `get`, `set`, `iter`, `count` and `is_empty`, and the six copies had already
+/// drifted into four different signatures.
+///
+/// The distinction it exists to keep is between a joint that is absent and a
+/// joint that is zero. Those are not the same thing anywhere downstream — an
+/// absent joint contributes no ray to a triangulation and a zeroed one drags
+/// the answer to the origin — so the gaps are `None` rather than a sentinel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JointMap<T> {
+    values: [Option<T>; Joint::ALL.len()],
+}
+
+impl<T> Default for JointMap<T> {
+    fn default() -> Self {
+        // `from_fn` rather than `[None; N]`, which would need `T: Copy` and
+        // rule out the half of these that carry a `Vec`.
+        Self {
+            values: std::array::from_fn(|_| None),
+        }
+    }
+}
+
+impl<T> JointMap<T> {
+    pub fn get(&self, joint: Joint) -> Option<&T> {
+        self.values[joint.index()].as_ref()
+    }
+
+    pub fn set(&mut self, joint: Joint, value: T) {
+        self.values[joint.index()] = Some(value);
+    }
+
+    /// Forgets a joint, which is not the same as setting it to anything.
+    pub fn clear(&mut self, joint: Joint) {
+        self.values[joint.index()] = None;
+    }
+
+    /// The joints that have a value, in the canonical order.
+    ///
+    /// The order is [`Joint::ALL`] and not a hash map's whim, which is what
+    /// makes one run's diagnostics comparable with another's.
+    pub fn iter(&self) -> impl Iterator<Item = (Joint, &T)> + '_ {
+        Joint::ALL
+            .iter()
+            .filter_map(|joint| self.get(*joint).map(|value| (*joint, value)))
+    }
+
+    /// The values alone, for a summary that does not care which joint is which.
+    pub fn values(&self) -> impl Iterator<Item = &T> + '_ {
+        self.values.iter().flatten()
+    }
+
+    pub fn count(&self) -> usize {
+        self.values.iter().filter(|value| value.is_some()).count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+}
+
+impl<T: Copy> JointMap<T> {
+    /// The value itself rather than a reference, for the small payloads where
+    /// a borrow is more awkward than the copy is expensive.
+    pub fn copied(&self, joint: Joint) -> Option<T> {
+        self.values[joint.index()]
+    }
+}
+
 /// How one model's keypoint ordering maps into the canonical set.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Layout {
@@ -277,6 +351,57 @@ pub const BONES: [(Joint, Joint); 24] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_joint_map_starts_empty_and_remembers_what_it_is_given() {
+        let mut map: JointMap<f64> = JointMap::default();
+        assert!(map.is_empty());
+        assert_eq!(map.count(), 0);
+        assert!(map.get(Joint::LeftKnee).is_none());
+
+        map.set(Joint::LeftKnee, 1.5);
+        map.set(Joint::RightAnkle, 2.5);
+
+        assert_eq!(map.copied(Joint::LeftKnee), Some(1.5));
+        assert!(map.get(Joint::RightKnee).is_none());
+        assert_eq!(map.count(), 2);
+        assert!(!map.is_empty());
+    }
+
+    /// Forgetting a joint and setting it to zero are different answers, and
+    /// everything downstream treats them differently.
+    #[test]
+    fn clearing_a_joint_leaves_no_value_rather_than_a_zero() {
+        let mut map: JointMap<f64> = JointMap::default();
+        map.set(Joint::Hip, 0.0);
+        assert_eq!(map.count(), 1);
+
+        map.clear(Joint::Hip);
+        assert_eq!(map.count(), 0);
+        assert!(map.get(Joint::Hip).is_none());
+    }
+
+    #[test]
+    fn a_joint_map_iterates_in_the_canonical_order() {
+        let mut map: JointMap<u32> = JointMap::default();
+        for joint in [Joint::RightAnkle, Joint::Nose, Joint::Hip] {
+            map.set(joint, joint.index() as u32);
+        }
+
+        let order: Vec<Joint> = map.iter().map(|(joint, _)| joint).collect();
+        assert_eq!(order, vec![Joint::Nose, Joint::Hip, Joint::RightAnkle]);
+
+        // The values alone come out in the same order, which is what makes a
+        // summary over them comparable between one run and the next.
+        let values: Vec<u32> = map.values().copied().collect();
+        assert_eq!(
+            values,
+            order
+                .iter()
+                .map(|joint| joint.index() as u32)
+                .collect::<Vec<u32>>()
+        );
+    }
 
     #[test]
     fn the_builtin_layouts_are_valid() {

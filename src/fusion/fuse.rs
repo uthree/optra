@@ -19,7 +19,7 @@ use nalgebra::Point3;
 
 use crate::geometry::camera::Camera;
 use crate::geometry::triangulate::{Observation, Triangulation, closest_approach, triangulate};
-use crate::models::Joint;
+use crate::models::{Joint, JointMap};
 
 use super::align::Aligned;
 
@@ -214,9 +214,9 @@ pub struct Pose3d {
     /// from the user rather than from a checkerboard, and it is what says
     /// whether the cameras have been knocked since they were solved.
     pub disagreement: f64,
-    joints: Vec<Option<FusedJoint>>,
+    joints: JointMap<FusedJoint>,
     /// Why each joint that is not here is not here.
-    missing: Vec<Option<Missing>>,
+    missing: JointMap<Missing>,
 }
 
 impl Pose3d {
@@ -224,26 +224,26 @@ impl Pose3d {
         Self {
             at,
             disagreement: 1.0,
-            joints: (0..Joint::ALL.len()).map(|_| None).collect(),
-            missing: (0..Joint::ALL.len()).map(|_| None).collect(),
+            joints: JointMap::default(),
+            missing: JointMap::default(),
         }
     }
 
     pub fn get(&self, joint: Joint) -> Option<&FusedJoint> {
-        self.joints[joint.index()].as_ref()
+        self.joints.get(joint)
     }
 
     pub fn set(&mut self, joint: Joint, fused: FusedJoint) {
-        self.joints[joint.index()] = Some(fused);
-        self.missing[joint.index()] = None;
+        self.joints.set(joint, fused);
+        self.missing.clear(joint);
     }
 
     pub fn missing(&self, joint: Joint) -> Option<Missing> {
-        self.missing[joint.index()]
+        self.missing.copied(joint)
     }
 
     fn miss(&mut self, joint: Joint, why: Missing) {
-        self.missing[joint.index()] = Some(why);
+        self.missing.set(joint, why);
     }
 
     /// How the body divided up between measured and the reasons it was not.
@@ -252,7 +252,7 @@ impl Pose3d {
             measured: self.count(),
             ..Tally::default()
         };
-        for why in self.missing.iter().flatten() {
+        for why in self.missing.values() {
             let slot = match why {
                 Missing::Unseen => &mut tally.unseen,
                 Missing::Unsure { .. } => &mut tally.unsure,
@@ -268,8 +268,7 @@ impl Pose3d {
         // describes the other ten.
         let mut misses: Vec<f64> = self
             .missing
-            .iter()
-            .flatten()
+            .values()
             .filter_map(|why| match why {
                 Missing::Disagreed { miss, .. } if miss.is_finite() => Some(*miss),
                 _ => None,
@@ -284,17 +283,15 @@ impl Pose3d {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Joint, &FusedJoint)> + '_ {
-        Joint::ALL
-            .iter()
-            .filter_map(|joint| self.get(*joint).map(|fused| (*joint, fused)))
+        self.joints.iter()
     }
 
     pub fn count(&self) -> usize {
-        self.joints.iter().filter(|joint| joint.is_some()).count()
+        self.joints.count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.count() == 0
+        self.joints.is_empty()
     }
 
     /// How many of the lower-body joints came through, which is the number that

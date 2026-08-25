@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use nalgebra::{Point3, Vector3};
 
-use crate::models::Joint;
+use crate::models::{Joint, JointMap};
 
 use super::bones::{BONES, Bone, MeasureOptions, Skeleton};
 use super::fuse::Pose3d;
@@ -80,19 +80,19 @@ pub struct FittedJoint {
 #[derive(Debug, Clone)]
 pub struct Fitted {
     pub at: Instant,
-    joints: Vec<Option<FittedJoint>>,
+    joints: JointMap<FittedJoint>,
 }
 
 impl Fitted {
     pub fn empty(at: Instant) -> Self {
         Self {
             at,
-            joints: (0..Joint::ALL.len()).map(|_| None).collect(),
+            joints: JointMap::default(),
         }
     }
 
     pub fn get(&self, joint: Joint) -> Option<FittedJoint> {
-        self.joints[joint.index()]
+        self.joints.copied(joint)
     }
 
     pub fn position(&self, joint: Joint) -> Option<Point3<f64>> {
@@ -100,21 +100,19 @@ impl Fitted {
     }
 
     pub fn set(&mut self, joint: Joint, fitted: FittedJoint) {
-        self.joints[joint.index()] = Some(fitted);
+        self.joints.set(joint, fitted);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Joint, FittedJoint)> + '_ {
-        Joint::ALL
-            .iter()
-            .filter_map(|joint| self.get(*joint).map(|fitted| (*joint, fitted)))
+        self.joints.iter().map(|(joint, fitted)| (joint, *fitted))
     }
 
     pub fn count(&self) -> usize {
-        self.joints.iter().filter(|joint| joint.is_some()).count()
+        self.joints.count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.count() == 0
+        self.joints.is_empty()
     }
 
     /// Joints that were placed by the constraints rather than seen.
@@ -212,12 +210,15 @@ impl Fitter {
                 .map(|observed| (node.point - observed).norm())
                 .unwrap_or(0.0);
 
-            fitted.joints[joint.index()] = Some(FittedJoint {
-                point: node.point,
-                sigma: node.sigma,
-                inferred: node.observed.is_none(),
-                correction,
-            });
+            fitted.set(
+                joint,
+                FittedJoint {
+                    point: node.point,
+                    sigma: node.sigma,
+                    inferred: node.observed.is_none(),
+                    correction,
+                },
+            );
         }
 
         self.previous = Some(fitted.clone());

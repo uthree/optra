@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use nalgebra::{Matrix2, Point3, Vector2, Vector3};
 
-use crate::models::Joint;
+use crate::models::{Joint, JointMap};
 
 use super::fit::Fitted;
 
@@ -177,7 +177,7 @@ pub struct Filtered {
     /// metres. Carried here so that a stage predicting further can apply the
     /// same bound rather than inventing its own.
     pub limit: f64,
-    joints: Vec<Option<FilteredJoint>>,
+    joints: JointMap<FilteredJoint>,
 }
 
 impl Filtered {
@@ -186,12 +186,12 @@ impl Filtered {
             at,
             horizon,
             limit: FilterOptions::default().max_prediction,
-            joints: (0..Joint::ALL.len()).map(|_| None).collect(),
+            joints: JointMap::default(),
         }
     }
 
     pub fn get(&self, joint: Joint) -> Option<FilteredJoint> {
-        self.joints[joint.index()]
+        self.joints.copied(joint)
     }
 
     pub fn position(&self, joint: Joint) -> Option<Point3<f64>> {
@@ -203,21 +203,21 @@ impl Filtered {
     }
 
     pub fn set(&mut self, joint: Joint, filtered: FilteredJoint) {
-        self.joints[joint.index()] = Some(filtered);
+        self.joints.set(joint, filtered);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Joint, FilteredJoint)> + '_ {
-        Joint::ALL
+        self.joints
             .iter()
-            .filter_map(|joint| self.get(*joint).map(|filtered| (*joint, filtered)))
+            .map(|(joint, filtered)| (joint, *filtered))
     }
 
     pub fn count(&self) -> usize {
-        self.joints.iter().filter(|joint| joint.is_some()).count()
+        self.joints.count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.count() == 0
+        self.joints.is_empty()
     }
 }
 
@@ -277,13 +277,16 @@ impl PoseFilter {
                 none => none.insert(Track::new(measured.point, fitted.at)),
             };
 
-            out.joints[joint.index()] = Some(track.step(
-                measured.point,
-                measured.sigma,
-                fitted.at,
-                measured.inferred,
-                &self.options,
-            ));
+            out.set(
+                joint,
+                track.step(
+                    measured.point,
+                    measured.sigma,
+                    fitted.at,
+                    measured.inferred,
+                    &self.options,
+                ),
+            );
         }
 
         out

@@ -5,5 +5,5 @@ pub mod keypoints;
 pub mod manifest;
 pub mod store;
 
-pub use keypoints::{Joint, Layout};
+pub use keypoints::{Joint, JointMap, Layout};
 pub use manifest::{Manifest, ModelKind, ModelSource, ModelSpec};
