@@ -867,6 +867,25 @@ measured continuously, from the user rather than from a checkerboard, and it is
 the only thing in the application that can notice a camera has been knocked
 since it was solved.
 
+**A joint that is not reconstructed says which of five things went wrong.**
+Nothing offered a keypoint; something did and none of it cleared the confidence
+gate, with the best confidence any camera managed carried alongside; only one
+ray arrived, which fixes a direction and nothing else; the geometry could not be
+solved from any subset; or it was solved and thrown away for being too
+uncertain. These are four unrelated problems with four different next moves —
+move a camera, lower the gate, add a camera that can see the joint, recalibrate
+— and the panel showed one dash for all of them. "Twenty-three of twenty-six
+joints inferred" says something is badly wrong and nothing about what.
+
+Writing the test for that turned up something worth stating plainly: **two rays
+can never disagree.** Two skew lines always have a nearest point, so a badly
+calibrated pair does not fail — the point simply moves, confidently, to
+somewhere the joint is not. The only thing standing between a user and that is
+the uncertainty above. Disagreement is detectable from three rays up, and even
+then the usual outcome is that the odd ray is dropped and the joint reported
+without it. It is the argument for a third camera stated precisely: the second
+camera buys a position and the third buys the ability to know it is wrong.
+
 **Where the cameras are is a separate question from how well they were solved,
 and it is asked separately.** A calibration can be flawless and still describe
 cameras clustered in one corner all looking the same way: they agree with each
@@ -1119,6 +1138,15 @@ left to right they say where to look: all four high is the cameras and nothing
 downstream will help; raw high and filtered low is the smoothing doing its job;
 filtered low and sent high is the prediction, which is the one stage here that
 can add movement rather than remove it.
+
+Every stage measures the same joints: the ones the cameras actually saw. The
+first version did not, and it lied about exactly the case it was built for. The
+fit hands back a whole body whether or not anything was seen, so with 23 of 26
+joints invented the median landed on an invented one — and an invented joint
+barely moves, because it is placed from a skeleton. The row read `cameras 184
+mm, fit 0, smoothed 0, sent 0`, which reads as the fit having cured everything
+and was nothing of the kind. Four numbers about four different populations are
+not comparable, and comparing them is the entire purpose of the row.
 
 
 ## 10. Tracker pose derivation
