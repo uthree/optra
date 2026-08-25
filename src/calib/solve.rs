@@ -190,6 +190,35 @@ impl RoomCalibration {
 /// as a round changes nothing.
 const LATENCY_ROUNDS: usize = 3;
 
+/// The share of its own sightings a camera has to keep to count as solved.
+///
+/// A camera that fits badly does not come back with a large error. The
+/// refinement's outlier rejection has already thrown away everything that
+/// disagreed with it, so what comes back is a small number of sightings with a
+/// small error over them — a camera that kept two of two hundred and one and is
+/// a metre and a half from where it hangs.
+///
+/// Loose, because it is separating populations that are four orders of
+/// magnitude apart: a solved camera in a clean room keeps all of its sightings,
+/// and a lost one keeps one or two per cent of them.
+const MIN_RETAINED: f64 = 0.25;
+
+/// And how far its reprojection may be out, in degrees.
+///
+/// A solved camera lands within hundredths of a degree of every sighting it
+/// kept. Three degrees is nowhere near that and nowhere near the thirty-six and
+/// eighty-one degrees the two lost cameras came back with.
+const MAX_CAMERA_DEGREES: f64 = 3.0;
+
+/// How far the delay a camera was fitted at may sit from the delay measured
+/// against that fit.
+///
+/// Zero when the alternation converged, which it does in two rounds on any
+/// delay a webcam has. It is only non-zero when something declined to close
+/// the loop, and then it is the size of the error left in the room: a camera
+/// fitted ten milliseconds away from its real delay was half a metre out.
+const MAX_LATENCY_DISAGREEMENT: Duration = Duration::from_millis(6);
+
 /// Solves every camera in the recording.
 pub fn solve(
     recording: &Recording,
@@ -352,6 +381,85 @@ pub fn solve(
             sightings = pair(recording, &index, &lags);
             refined = refine(&seeds, &offsets, &sightings, &options.refine);
         }
+    }
+
+    // A camera can come out of the refinement having been solved to nonsense,
+    // and it does not look like an error from the outside. The outlier
+    // rejection throws away every sighting that disagreed with wherever the
+    // camera ended up, so what is left is a handful of sightings with a small
+    // error over them — and the room is returned as `Ok`, saved as a profile,
+    // and used. Measured: a camera forty milliseconds late whose delay the
+    // estimator put at a hundred and seventy-two kept five of a hundred and
+    // eighty-one sightings, came out thirty-six degrees from them, and stood
+    // two and a half metres from where it hangs.
+    //
+    // The evidence for that was already in hand and nothing read it. It is a
+    // long way from a solved camera in either direction, so the thresholds are
+    // loose and it is checked rather than guessed at.
+    let lost: Vec<String> = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, id)| {
+            let offered = sightings
+                .iter()
+                .filter(|sighting| sighting.camera == slot)
+                .count();
+            let kept = refined.per_camera[slot].sightings;
+            let retained = if offered == 0 {
+                0.0
+            } else {
+                kept as f64 / offered as f64
+            };
+            let degrees = refined.per_camera[slot].rms.to_degrees();
+
+            if retained < MIN_RETAINED || degrees > MAX_CAMERA_DEGREES {
+                return Some(format!(
+                    "{id} kept only {kept} of its {offered} sightings, and came \
+                     out {degrees:.0}° from the ones it kept"
+                ));
+            }
+
+            // The delay the room was fitted at, against the delay that was
+            // measured. When those disagree the room is wrong by whatever the
+            // difference is worth, and the reprojection above cannot say so:
+            // a timing error moves every sighting the same way, so the fit
+            // stays perfectly self-consistent about a camera in the wrong
+            // place. Ten milliseconds of disagreement was half a metre.
+            //
+            // This is the check the delay handling has always needed and never
+            // had. It catches an estimate too long to apply, a loop that ran
+            // out of rounds still moving, and a seed that had to guess — all of
+            // which end the same way, with a camera fitted to a walk it was
+            // never watching.
+            //
+            // Only for a confident estimate. A walk too slow to pin the delay
+            // down produces a minimum in noise, and refusing the room on the
+            // strength of a number the estimator has already disowned would
+            // turn an amble into a failed calibration.
+            let estimate = estimates[slot]?;
+            let fitted_at = lags.get(slot).copied().unwrap_or(Duration::ZERO);
+            let disagreement = estimate.latency.abs_diff(fitted_at);
+
+            (estimate.is_confident() && disagreement > MAX_LATENCY_DISAGREEMENT).then(|| {
+                format!(
+                    "{id} is {:.0} ms behind and the room was solved as though \
+                     it were {:.0} ms behind",
+                    estimate.millis(),
+                    fitted_at.as_secs_f64() * 1000.0
+                )
+            })
+        })
+        .collect();
+
+    if !lost.is_empty() {
+        bail!(
+            "the room could not be solved: {}. The rest of the cameras cannot \
+             be trusted without them. The usual cause is a camera delivering \
+             frames late — check its measured frame rate and dropped-frame \
+             count in the Cameras panel. Walking again will not help on its \
+             own.",
+            lost.join("; ")
+        );
     }
 
     let cameras = ids

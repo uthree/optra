@@ -607,9 +607,15 @@ fn a_recording_with_late_cameras_solves_once_the_delay_is_measured() {
         "worst camera is {corrected} m out even after the delays were measured"
     );
 
-    // The number that says the second fit was worth doing. Solving the same
-    // recording while insisting the cameras are prompt pairs every pixel with
-    // a pose from tens of milliseconds after the shutter.
+    // What the second fit is worth. Solving the same recording while insisting
+    // the cameras are prompt pairs every pixel with a pose from tens of
+    // milliseconds after the shutter, and it used to converge on a room with a
+    // camera nine metres from where it hangs — cheerfully, as an `Ok`.
+    //
+    // It no longer comes back at all, which is the better answer and is checked
+    // here rather than the nine metres: the cameras that were fitted to a walk
+    // they had not caught up with keep a fraction of their sightings and land
+    // tens of degrees from the ones they keep, and that is now refused.
     let ignored = solve(
         &recording,
         &configs,
@@ -617,18 +623,25 @@ fn a_recording_with_late_cameras_solves_once_the_delay_is_measured() {
             estimate_latency: false,
             ..SolveOptions::default()
         },
-    )
-    .expect("it still converges, to the wrong room");
-    let uncorrected = worst_camera_error(&ignored, &truth);
-
-    println!(
-        "worst camera {:.1} mm with the delays ignored",
-        uncorrected * 1000.0
     );
+    let refused = ignored
+        .as_ref()
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "no refusal at all, and a room {:.0} mm out",
+                ignored
+                    .as_ref()
+                    .map(|room| worst_camera_error(room, &truth) * 1000.0)
+                    .unwrap_or(f64::NAN)
+            )
+        });
+    println!("with the delays ignored: {refused}");
     assert!(
-        uncorrected > 4.0 * corrected,
-        "correcting the delays changed the answer by almost nothing: \
-         {uncorrected} m against {corrected} m"
+        ignored.is_err(),
+        "a room solved as though three late cameras were prompt was returned \
+         as usable: {refused}"
     );
 }
 
@@ -688,6 +701,94 @@ fn cameras_too_late_to_resect_are_still_solved() {
             worst < 0.01,
             "worst camera is {:.1} mm out with delays {delays:?}",
             worst * 1000.0
+        );
+    }
+}
+
+/// A room that did not solve is refused rather than returned.
+///
+/// The failure this guards against does not look like one. When a camera ends
+/// up somewhere wrong, the refinement's outlier rejection throws away every
+/// sighting that disagreed with it, so what comes back is a handful of
+/// sightings with a small error over them — and `solve` returns `Ok`, the
+/// wizard saves a profile, and the feet are a metre out for as long as it is in
+/// force.
+///
+/// Both of the cases here were found by sweeping delays past what the tests
+/// used to cover, and both came back `Ok`: one camera two and a half metres
+/// from where it hangs, another a metre and a half.
+#[test]
+fn a_camera_that_did_not_solve_is_refused_rather_than_returned() {
+    let truth = room();
+    let configs = configs(truth.len());
+
+    // The seed search does not run here, because resecting against prompt
+    // timestamps *succeeds* — it just succeeds somewhere wrong, and the
+    // latency estimator then finds its minimum at a delay of zero. Only two of
+    // this camera's two hundred and one sightings survived the fit.
+    let mut delays = vec![Duration::ZERO; 4];
+    delays[2] = Duration::from_millis(80);
+    let error = solve(
+        &recorded_walk(&truth, &delays),
+        &configs,
+        &SolveOptions::default(),
+    )
+    .expect_err("a camera solved to nonsense should not come back as a room")
+    .to_string();
+    assert!(
+        error.contains("cam2") && error.contains("sightings"),
+        "the refusal should name the camera and what was wrong with it: {error}"
+    );
+
+    // Late enough that the delay is measured and then not applied. The room is
+    // fitted at whatever delay the seed search landed on, and a fit ten
+    // milliseconds away from the truth is self-consistent and half a metre out
+    // — which is exactly what reprojection error cannot see, since a timing
+    // error moves every sighting the same way.
+    let mut delays = vec![Duration::ZERO; 4];
+    delays[0] = Duration::from_millis(150);
+    let error = solve(
+        &recorded_walk(&truth, &delays),
+        &configs,
+        &SolveOptions::default(),
+    )
+    .expect_err("a room fitted at the wrong delay should not come back")
+    .to_string();
+    assert!(
+        error.contains("cam0") && error.contains("behind"),
+        "the refusal should say the delay was not the one the room was solved at: {error}"
+    );
+}
+
+/// And the gate does not fire on rooms that did solve.
+///
+/// The thresholds separate populations four orders of magnitude apart — a
+/// solved camera keeps every sighting and lands within hundredths of a degree,
+/// a lost one keeps one per cent of them and lands tens of degrees out — but a
+/// gate that refuses good rooms is worse than no gate, so the delays that do
+/// work are checked as well as the ones that do not.
+#[test]
+fn a_room_that_solved_is_not_refused() {
+    let truth = room();
+    let configs = configs(truth.len());
+
+    for delays in [
+        [0, 0, 0, 0],
+        [0, 40, 90, 20],
+        [40, 90, 120, 60],
+        [70, 70, 70, 70],
+    ] {
+        let delays: Vec<Duration> = delays.iter().map(|ms| Duration::from_millis(*ms)).collect();
+        let solved = solve(
+            &recorded_walk(&truth, &delays),
+            &configs,
+            &SolveOptions::default(),
+        )
+        .unwrap_or_else(|error| panic!("{delays:?} solves, and was refused: {error}"));
+        assert!(
+            worst_camera_error(&solved, &truth) < 0.01,
+            "{delays:?} was accepted and is {:.1} mm out",
+            worst_camera_error(&solved, &truth) * 1000.0
         );
     }
 }
