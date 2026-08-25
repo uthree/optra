@@ -248,7 +248,7 @@ fn run(
         let frame = fusion.latest();
 
         let (trackers, lead, problem) = match frame.as_deref() {
-            Some(frame) if now.saturating_duration_since(frame.filtered.at) < STALE => {
+            Some(frame) if stale(Some(frame.filtered.at), now).is_none() => {
                 let posture = Posture::predicted(&frame.filtered, now, ceiling);
                 let lead = (now
                     .saturating_duration_since(frame.filtered.at)
@@ -268,39 +268,14 @@ fn run(
 
                 (trackers, lead, None)
             }
-            Some(_) => (
+            other => (
                 Vec::new(),
                 0.0,
-                Some("the reconstruction has stopped arriving".to_owned()),
-            ),
-            None => (
-                Vec::new(),
-                0.0,
-                Some("fusion has not produced a body yet".to_owned()),
+                stale(other.map(|frame| frame.filtered.at), now),
             ),
         };
 
-        // Which trackers have been gone long enough to switch off.
-        let mut lost = Vec::new();
-        for watch in &mut watches {
-            match trackers.iter().find(|tracker| tracker.role == watch.role) {
-                Some(tracker) => {
-                    watch.seen = Some(now);
-                    watch.sigma = tracker.sigma;
-                    watch.inferred = tracker.inferred;
-                    watch.live = ema(watch.live, 1.0);
-                }
-                None => {
-                    watch.live = ema(watch.live, 0.0);
-                    if watch
-                        .seen
-                        .is_none_or(|seen| now.saturating_duration_since(seen) > PATIENCE)
-                    {
-                        lost.push(watch.role);
-                    }
-                }
-            }
-        }
+        let lost = watch_trackers(&mut watches, &trackers, now);
 
         let head = vr.as_ref().and_then(|vr| vr.latest()).and_then(|snapshot| {
             snapshot
@@ -349,6 +324,61 @@ fn run(
     }
 
     channel.stats.lock().running = false;
+}
+
+/// Why a reconstruction cannot be sent from, or `None` when it can.
+///
+/// Pulled out of the loop so that it can be asked about an instant rather than
+/// about the wall clock. Both boundaries in this file are about the passage of
+/// time, and a test that has to wait for real time to pass to reach one is a
+/// test nobody writes.
+fn stale(at: Option<Instant>, now: Instant) -> Option<String> {
+    match at {
+        None => Some("fusion has not produced a body yet".to_owned()),
+        Some(at) if now.saturating_duration_since(at) >= STALE => {
+            Some("the reconstruction has stopped arriving".to_owned())
+        }
+        Some(_) => None,
+    }
+}
+
+/// Records what went out this tick against each tracker being watched, and
+/// returns the ones that have been gone long enough to switch off.
+///
+/// A tracker missing for a frame or two is a limb behind the other one, and it
+/// holds its last pose. Past [`PATIENCE`] it is not an occlusion any more, and
+/// a foot left standing on a floor the user has walked away from is worse than
+/// no foot at all.
+fn watch_trackers(
+    watches: &mut [Watch],
+    trackers: &[TrackerPose],
+    now: Instant,
+) -> Vec<TrackerRole> {
+    let mut lost = Vec::new();
+
+    for watch in watches.iter_mut() {
+        match trackers.iter().find(|tracker| tracker.role == watch.role) {
+            Some(tracker) => {
+                watch.seen = Some(now);
+                watch.sigma = tracker.sigma;
+                watch.inferred = tracker.inferred;
+                watch.live = ema(watch.live, 1.0);
+            }
+            None => {
+                watch.live = ema(watch.live, 0.0);
+                // Never seen at all counts as lost: a tracker that has not
+                // arrived since the stage started is not being occluded.
+                if watch
+                    .seen
+                    .is_none_or(|seen| now.saturating_duration_since(seen) > PATIENCE)
+                {
+                    lost.push(watch.role);
+                }
+            }
+        }
+    }
+
+    lost
 }
 
 /// Moves a tracker along its own axes.
@@ -487,6 +517,131 @@ mod tests {
             &[(TrackerRole::Chest, Vector3::new(0.0, 0.5, 0.0))],
         );
         assert_eq!(moved.pose, tracker.pose);
+    }
+
+    fn watch(role: TrackerRole) -> Watch {
+        Watch {
+            role,
+            index: 1,
+            seen: None,
+            live: 0.0,
+            sigma: 0.0,
+            inferred: false,
+        }
+    }
+
+    fn tracker(role: TrackerRole) -> TrackerPose {
+        TrackerPose {
+            role,
+            pose: Isometry3::from_parts(
+                Translation3::new(0.0, 0.95, -1.0),
+                UnitQuaternion::identity(),
+            ),
+            sigma: 0.02,
+            inferred: true,
+        }
+    }
+
+    #[test]
+    fn a_fresh_reconstruction_has_nothing_wrong_with_it() {
+        let now = Instant::now();
+        assert!(stale(Some(now), now).is_none());
+        assert!(stale(Some(now - STALE / 2), now).is_none());
+    }
+
+    /// Past the limit the extrapolation is most of the answer, and a straight
+    /// line through half a second of a walking body is not a body.
+    #[test]
+    fn a_reconstruction_older_than_the_limit_stops_everything() {
+        let now = Instant::now();
+        assert!(stale(Some(now - STALE), now).is_some());
+        assert!(stale(Some(now - STALE * 2), now).is_some());
+    }
+
+    /// Two different problems with two different remedies: one is a stage that
+    /// never started and the other is one that stopped.
+    #[test]
+    fn no_reconstruction_at_all_says_so_differently_from_a_stale_one() {
+        let now = Instant::now();
+        let never = stale(None, now).expect("nothing to send from");
+        let stopped = stale(Some(now - STALE * 2), now).expect("too old to send from");
+        assert_ne!(never, stopped);
+    }
+
+    #[test]
+    fn a_tracker_that_arrived_is_recorded_and_not_lost() {
+        let now = Instant::now();
+        let mut watches = vec![watch(TrackerRole::Hip)];
+
+        let lost = watch_trackers(&mut watches, &[tracker(TrackerRole::Hip)], now);
+
+        assert!(lost.is_empty());
+        assert_eq!(watches[0].seen, Some(now));
+        assert_eq!(watches[0].sigma, 0.02);
+        assert!(watches[0].inferred);
+        assert!(watches[0].live > 0.0);
+    }
+
+    /// A limb passing behind the other one goes missing constantly, and a
+    /// tracker that switched itself off every time would be unusable.
+    #[test]
+    fn a_tracker_missing_for_less_than_the_patience_holds_its_pose() {
+        let start = Instant::now();
+        let mut watches = vec![watch(TrackerRole::LeftFoot)];
+        watch_trackers(&mut watches, &[tracker(TrackerRole::LeftFoot)], start);
+
+        let lost = watch_trackers(&mut watches, &[], start + PATIENCE);
+        assert!(lost.is_empty(), "switched off after only {PATIENCE:?}");
+        assert_eq!(
+            watches[0].seen,
+            Some(start),
+            "a missing tracker must not refresh its own timestamp"
+        );
+    }
+
+    #[test]
+    fn a_tracker_missing_past_the_patience_is_called_lost() {
+        let start = Instant::now();
+        let mut watches = vec![watch(TrackerRole::LeftFoot)];
+        watch_trackers(&mut watches, &[tracker(TrackerRole::LeftFoot)], start);
+
+        let lost = watch_trackers(&mut watches, &[], start + PATIENCE + STALE);
+        assert_eq!(lost, vec![TrackerRole::LeftFoot]);
+    }
+
+    /// A tracker that has not arrived since the stage started is not being
+    /// occluded by anything, so it is lost from the first tick rather than
+    /// after a wait.
+    #[test]
+    fn a_tracker_that_never_arrived_is_lost_immediately() {
+        let now = Instant::now();
+        let mut watches = vec![watch(TrackerRole::Chest)];
+
+        let lost = watch_trackers(&mut watches, &[], now);
+        assert_eq!(lost, vec![TrackerRole::Chest]);
+    }
+
+    #[test]
+    fn one_tracker_going_missing_does_not_take_the_others_with_it() {
+        let start = Instant::now();
+        let mut watches = vec![
+            watch(TrackerRole::Hip),
+            watch(TrackerRole::LeftFoot),
+            watch(TrackerRole::RightFoot),
+        ];
+        let all: Vec<TrackerPose> = watches.iter().map(|watch| tracker(watch.role)).collect();
+        watch_trackers(&mut watches, &all, start);
+
+        let present: Vec<TrackerPose> = all
+            .iter()
+            .filter(|tracker| tracker.role != TrackerRole::LeftFoot)
+            .cloned()
+            .collect();
+        let lost = watch_trackers(&mut watches, &present, start + PATIENCE + STALE);
+
+        assert_eq!(lost, vec![TrackerRole::LeftFoot]);
+        assert_eq!(watches[0].seen, Some(start + PATIENCE + STALE));
+        assert_eq!(watches[2].seen, Some(start + PATIENCE + STALE));
     }
 
     fn reports(lost: &[TrackerRole]) -> Vec<TrackerReport> {
