@@ -74,7 +74,21 @@ pub struct Triangulation {
     /// Weight each contributing camera carried, normalized to sum to one.
     pub weights: Vec<(usize, f64)>,
     /// Position covariance implied by the rays, in square metres.
+    ///
+    /// Implied is the word: it is built from the uncertainty each ray *claimed*
+    /// and knows nothing about whether they turned out to agree.
     pub covariance: Matrix3<f64>,
+    /// Sum of each inlier.s squared residual measured in units of the noise it
+    /// claimed, and the degrees of freedom that sum was taken over.
+    ///
+    /// The other half of the answer, and the half the covariance cannot give.
+    /// A well conditioned bundle of rays that disagree by three times what they
+    /// claimed has a small covariance and a large chi-square, and it is the
+    /// chi-square that is telling the truth about where the point is. Pooled
+    /// across the body it becomes the factor the covariance was missing.
+    pub chi_square: f64,
+    /// Two constraints per ray, three unknowns in the point.
+    pub dof: f64,
 }
 
 impl Triangulation {
@@ -214,6 +228,21 @@ pub fn triangulate(
         *weight /= total.max(1e-12);
     }
 
+    // How much worse the rays agreed than they said they would, in the units
+    // the claim was made in. Nothing here decides what to do with it — that is
+    // a question about the whole body rather than about one joint, because one
+    // joint has one or three degrees of freedom and no estimate worth acting
+    // on comes out of three.
+    let chi_square: f64 = inliers
+        .iter()
+        .filter_map(|index| {
+            let observation = observations[*index];
+            residual(cameras, &observation, point)
+                .map(|error| (error / observation.sigma.max(1e-9)).powi(2))
+        })
+        .sum();
+    let dof = (2 * inliers.len()) as f64 - 3.0;
+
     Some(Triangulation {
         point,
         covariance,
@@ -223,6 +252,8 @@ pub fn triangulate(
             .map(|index| observations[*index].camera)
             .collect(),
         weights,
+        chi_square,
+        dof,
     })
 }
 

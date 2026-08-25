@@ -97,6 +97,9 @@ pub struct FusionStats {
     pub worst_correction: f64,
     /// How much the body is wobbling at each stage of the chain, in metres.
     pub shake: Shake,
+    /// How much worse the cameras agreed than their keypoints claimed, as a
+    /// multiplier already applied to every joint.s uncertainty. One is perfect.
+    pub disagreement: f64,
     pub cameras: Vec<CameraContribution>,
     /// The body measurement as it stands.
     pub body: Skeleton,
@@ -614,6 +617,13 @@ fn publish(
     stats.body = skeleton.clone();
     stats.floor = floor;
     stats.shake = shake;
+    // Smoothed here rather than in the fuse, which has no memory: it is a
+    // property of the room and should not be seen to twitch.
+    stats.disagreement = if stats.disagreement > 0.0 {
+        f64::from(ema(stats.disagreement as f32, raw.disagreement as f32))
+    } else {
+        raw.disagreement
+    };
     stats.cameras = tracked
         .iter()
         .map(|camera| CameraContribution {
@@ -646,6 +656,16 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
              room setup is off by that much",
             floor.abs() * 100.0,
             if floor < 0.0 { "below" } else { "above" }
+        ));
+    }
+
+    // Directly above the fit and the body measurement, because it is upstream
+    // of both and makes both of them look broken.
+    if stats.disagreement > 3.0 {
+        return Some(format!(
+            "your cameras disagree about where a joint is by {:.1} times what their \
+             keypoints claim, so the calibration is stale or one of them has been moved",
+            stats.disagreement
         ));
     }
 

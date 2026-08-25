@@ -295,6 +295,7 @@ fn tracked_fusion() -> Fusion {
         inferred: 1,
         lower_body: 4,
         worst_correction: 0.031,
+        disagreement: 2.4,
         shake: optra::fusion::shake::Shake {
             raw: 0.011,
             fitted: 0.009,

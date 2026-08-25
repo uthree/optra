@@ -18,7 +18,7 @@ use std::time::Instant;
 use nalgebra::Point3;
 
 use crate::geometry::camera::Camera;
-use crate::geometry::triangulate::{Observation, triangulate};
+use crate::geometry::triangulate::{Observation, Triangulation, triangulate};
 use crate::models::Joint;
 
 use super::align::Aligned;
@@ -87,6 +87,15 @@ pub struct Pose3d {
     /// The instant this reconstructs, which is behind real time by the
     /// alignment lag.
     pub at: Instant,
+    /// How much worse the cameras agreed than their keypoints claimed they
+    /// would, as a multiplier already applied to every joint.s uncertainty.
+    ///
+    /// One means the rays landed exactly as accurately as the pose models said
+    /// they would. Anything much above it is the calibration, and it is the
+    /// single most useful number about a room: it is measured continuously,
+    /// from the user rather than from a checkerboard, and it is what says
+    /// whether the cameras have been knocked since they were solved.
+    pub disagreement: f64,
     joints: Vec<Option<FusedJoint>>,
 }
 
@@ -94,6 +103,7 @@ impl Pose3d {
     pub fn empty(at: Instant) -> Self {
         Self {
             at,
+            disagreement: 1.0,
             joints: (0..Joint::ALL.len()).map(|_| None).collect(),
         }
     }
@@ -141,6 +151,7 @@ pub fn fuse(
     options: &FuseOptions,
 ) -> Pose3d {
     let mut pose = Pose3d::empty(at);
+    let mut solved = Vec::with_capacity(Joint::ALL.len());
 
     for joint in Joint::ALL {
         let observations: Vec<Observation> = views
@@ -168,11 +179,19 @@ pub fn fuse(
             continue;
         }
 
-        let Some(solved) = triangulate(cameras, &observations, options.inlier_threshold) else {
+        let Some(triangulated) = triangulate(cameras, &observations, options.inlier_threshold)
+        else {
             continue;
         };
+        solved.push((joint, observations, triangulated));
+    }
 
-        let sigma = solved.sigma();
+    // Every joint's uncertainty is scaled by this, so it has to be known before
+    // any of them can be reported or thrown away.
+    pose.disagreement = disagreement(solved.iter().map(|(_, _, t)| t));
+
+    for (joint, observations, triangulated) in solved {
+        let sigma = triangulated.sigma() * pose.disagreement;
         if !sigma.is_finite() || sigma > options.max_sigma {
             continue;
         }
@@ -180,22 +199,74 @@ pub fn fuse(
         let rejected = observations
             .iter()
             .map(|observation| observation.camera)
-            .filter(|camera| !solved.inliers.contains(camera))
+            .filter(|camera| !triangulated.inliers.contains(camera))
             .collect();
 
         pose.set(
             joint,
             FusedJoint {
-                point: solved.point,
+                point: triangulated.point,
                 sigma,
-                residual: solved.rms_residual(),
-                weights: solved.weights,
+                residual: triangulated.rms_residual(),
+                weights: triangulated.weights,
                 rejected,
             },
         );
     }
 
     pose
+}
+
+/// How much worse the cameras agreed than their keypoints claimed they would,
+/// as a multiplier on every uncertainty.
+///
+/// The covariance a triangulation reports is built entirely from the noise each
+/// ray *claimed*, by way of the keypoint confidence the pose model attached to
+/// it. It is a prediction of the error, never a measurement of one, and it is
+/// wrong in a specific and damaging direction: three well spread rays pin a
+/// point down beautifully whether or not the cameras they came from agree about
+/// where anything is, so a room calibrated to three centimetres reports joints
+/// good to five millimetres. Everything downstream believes it. The filter
+/// weights a measurement by that number, so it follows the disagreement as fast
+/// as it can; the panels print it, so the user is told their cameras are
+/// excellent; and the limits that exist to withhold a joint nothing can place
+/// never fire, because nothing ever exceeds them.
+///
+/// The residuals are the missing measurement. Scaling the covariance by the
+/// ratio of the two is the standard a posteriori variance factor of a
+/// least-squares adjustment, and it makes the reported uncertainty the one that
+/// was observed rather than the one that was assumed.
+///
+/// Pooled over the whole body rather than computed per joint, because per joint
+/// there is one degree of freedom with two rays and three with three, and the
+/// variance of such an estimate is as large as the estimate. It would swing the
+/// filter's gain around at random — a second source of shaking, introduced by
+/// the fix for the first. Pooling is also the truer model: how far apart two
+/// cameras think the room is is a property of the room, not of a knee.
+fn disagreement<'a>(solved: impl Iterator<Item = &'a Triangulation>) -> f64 {
+    /// A joint whose rays disagree by more than five times what they claimed
+    /// is not evidence about the room. It is a keypoint on the wrong limb that
+    /// the inlier test let through, and averaging it in would withhold the
+    /// whole body on account of one bad ankle.
+    const OUTLIER: f64 = 25.0;
+
+    let mut chi_square = 0.0;
+    let mut dof = 0.0;
+    for triangulated in solved {
+        if triangulated.dof <= 0.0 || triangulated.chi_square > OUTLIER * triangulated.dof {
+            continue;
+        }
+        chi_square += triangulated.chi_square;
+        dof += triangulated.dof;
+    }
+
+    if dof < 1.0 {
+        return 1.0;
+    }
+    // Never below one. Rays that agree better than they claimed have been
+    // lucky, not accurate, and a handful of joints is far too small a sample to
+    // conclude otherwise from.
+    (chi_square / dof).max(1.0).sqrt()
 }
 
 #[cfg(test)]
@@ -273,6 +344,77 @@ mod tests {
         )
     }
 
+
+    /// The same body, with one camera's keypoints landing a few pixels from
+    /// where its calibration says they should — which is what a room that has
+    /// drifted, or a camera that has been nudged, looks like from in here.
+    fn nudged(cameras: &[Camera], index: usize, confidence: f32, pixels: f32) -> (usize, Aligned) {
+        let mut keypoints = Keypoints2d::default();
+        for (joint, point) in body() {
+            if let Some(pixel) = cameras[index].project(point) {
+                keypoints.set(
+                    joint,
+                    Keypoint {
+                        x: pixel.x as f32 + pixels,
+                        y: pixel.y as f32,
+                        confidence,
+                    },
+                );
+            }
+        }
+        (index, still(keypoints))
+    }
+
+    /// The uncertainty a joint is reported with has to be the one that was
+    /// observed, not the one the pose models promised. Three well spread rays
+    /// pin a point down beautifully whether or not the cameras they came from
+    /// agree about where anything is, so the covariance alone will call a room
+    /// calibrated to three centimetres accurate to five millimetres — and
+    /// everything downstream believes it.
+    #[test]
+    fn cameras_that_disagree_report_uncertainty_that_says_so() {
+        let cameras = room();
+
+        let honest: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
+        let agreeing = fuse(&cameras, &honest, Instant::now(), &FuseOptions::default());
+        assert_eq!(
+            agreeing.disagreement, 1.0,
+            "rays that land exactly where they should claim nothing extra"
+        );
+
+        let mut skewed = honest.clone();
+        skewed[2] = nudged(&cameras, 2, 0.9, 8.0);
+        let disagreeing = fuse(&cameras, &skewed, Instant::now(), &FuseOptions::default());
+
+        assert!(
+            disagreeing.disagreement > 1.8,
+            "one camera eight pixels out was reported as {:.2}x disagreement",
+            disagreeing.disagreement
+        );
+
+        let calm = agreeing.get(Joint::Hip).expect("the hip was visible");
+        let shaken = disagreeing.get(Joint::Hip).expect("the hip was still visible");
+        assert!(
+            shaken.sigma > calm.sigma * 1.8,
+            "the hip claimed {:.1} mm against {:.1} mm, which is not enough of a difference",
+            shaken.sigma * 1000.0,
+            calm.sigma * 1000.0
+        );
+    }
+
+    /// The point itself must not move. This changes what is claimed about the
+    /// answer, not the answer.
+    #[test]
+    fn measuring_the_disagreement_does_not_move_the_body() {
+        let cameras = room();
+        let views: Vec<_> = (0..3).map(|index| view(&cameras, index, 0.9)).collect();
+        let pose = fuse(&cameras, &views, Instant::now(), &FuseOptions::default());
+
+        for (joint, truth) in body() {
+            let fused = pose.get(joint).expect("every joint was visible");
+            assert!((fused.point - truth).norm() < 1e-6, "{joint:?} moved");
+        }
+    }
     #[test]
     fn a_body_seen_by_three_cameras_comes_back_where_it_was() {
         let cameras = room();

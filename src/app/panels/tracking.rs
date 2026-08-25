@@ -188,6 +188,27 @@ impl TrackingPanel {
             }
         });
 
+        // The one number that says whether the room is still calibrated. It is
+        // measured continuously, from the user rather than from a checkerboard,
+        // and it is what says whether a camera has been knocked since it was
+        // solved. One means the rays landed exactly as accurately as the pose
+        // models claimed they would.
+        if stats.disagreement > 0.0 {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Cameras agree to").weak());
+                ui.colored_label(
+                    if stats.disagreement <= 1.5 {
+                        GOOD
+                    } else if stats.disagreement <= 3.0 {
+                        FAIR
+                    } else {
+                        BAD
+                    },
+                    format!("{:.1}\u{00d7} their own keypoints", stats.disagreement),
+                );
+            });
+        }
+
         // Reported next to the rate rather than buried in a section, because it
         // invalidates everything else on the panel. The cameras watching the
         // feet are an independent measurement of a quantity the rest of the
@@ -537,6 +558,23 @@ fn settings(ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
                 .text("Keypoint confidence gate"),
         )
         .changed();
+
+    ui.add_space(4.0);
+    changed |= ui
+        .add(
+            egui::Slider::new(&mut fusion.max_joint_sigma, 0.02..=0.40)
+                .text("Withhold a joint past (m)"),
+        )
+        .changed();
+    ui.label(
+        RichText::new(
+            "A joint the cameras cannot place this well is left out of the body, and the \
+             fit places it from the skeleton instead. The figure it is compared against \
+             includes how far the cameras turned out to disagree, so a room that has drifted \
+             withholds more.",
+        )
+        .weak(),
+    );
 
     ui.add_space(4.0);
     changed |= ui
