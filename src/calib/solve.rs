@@ -110,6 +110,38 @@ impl CameraCalibration {
     }
 }
 
+/// How well a placement can locate a foot, which has two different bad answers.
+///
+/// Kept apart because "placed to twenty centimetres" and "not in shot" call for
+/// different moves — the first wants the cameras further apart or higher, the
+/// second wants them tilted down — and because collapsing the second into a
+/// missing number would make it indistinguishable from a profile solved before
+/// anyone thought to ask.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FloorPrecision {
+    /// Two or more cameras have the floor beneath the walk in shot, and this is
+    /// how well they place a point on it, in metres.
+    Metres(f64),
+    /// Fewer than two do, anywhere along the walk. The feet are not placed
+    /// badly; they are absent.
+    OutOfShot,
+}
+
+impl FloorPrecision {
+    pub fn metres(self) -> Option<f64> {
+        match self {
+            FloorPrecision::Metres(metres) => Some(metres),
+            FloorPrecision::OutOfShot => None,
+        }
+    }
+
+    /// Whether feet can be tracked from this placement at all well.
+    pub fn is_good(self, limit: f64) -> bool {
+        self.metres().is_some_and(|metres| metres <= limit)
+    }
+}
+
 /// A solved room.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomCalibration {
@@ -122,12 +154,26 @@ pub struct RoomCalibration {
     pub rejected: usize,
     /// Sightings the final fit used.
     pub used: usize,
-    /// How well these camera positions can locate a joint at all, in metres.
+    /// How well these camera positions can locate a joint at all, in metres,
+    /// at the heights the calibration walk actually visited.
     ///
     /// A property of where the cameras are rather than of how well they were
-    /// solved, and the number that answers "is this a good placement".
+    /// solved. The walk is recorded from a headset and two controllers, so this
+    /// is a statement about the upper body and nothing else.
     #[serde(default)]
     pub precision: Option<f64>,
+    /// The same, at ankle height under each of those positions.
+    ///
+    /// The answer to "is this a good placement" for what Optra is actually for.
+    /// Cameras mounted low see a foot along their shared line of sight rather
+    /// than across it, and place it worse than they place a head — while every
+    /// other figure in the report, computed from a walk that happened entirely
+    /// above the waist, says the room is fine.
+    ///
+    /// `None` means the profile was solved before this was asked, which is not
+    /// the same as [`FloorPrecision::OutOfShot`] and must not be shown as it.
+    #[serde(default)]
+    pub floor_precision: Option<FloorPrecision>,
     pub solved_at: String,
 }
 
@@ -494,7 +540,11 @@ pub fn solve(
         .collect();
 
     Ok(RoomCalibration {
-        precision: precision(&refined.cameras, &sightings, &refined.offsets),
+        precision: precision_at(&refined.cameras, &sightings, &refined.offsets, None),
+        floor_precision: Some(
+            precision_at(&refined.cameras, &sightings, &refined.offsets, Some(ANKLE))
+                .map_or(FloorPrecision::OutOfShot, FloorPrecision::Metres),
+        ),
         cameras,
         rigs,
         rms: refined.rms,
@@ -683,6 +733,13 @@ const MIN_RIG_SIGHTINGS: usize = 30;
 
 /// How well these cameras, in these positions, can locate a point at all.
 ///
+/// Height of an ankle above the floor, in metres.
+///
+/// The calibration puts the floor at zero, so this is where a foot keypoint
+/// sits. It is also the hardest point in a room to place and the one Optra
+/// exists to place, which is why it gets asked about by name.
+const ANKLE: f64 = 0.10;
+
 /// This is a property of the *geometry*, and it is a different question from
 /// the reprojection error. A calibration can be flawless and still describe a
 /// set of cameras clustered in one corner, all looking the same way: they will
@@ -693,7 +750,25 @@ const MIN_RIG_SIGHTINGS: usize = 30;
 /// Answered by asking the machinery that will actually do the work: put a
 /// keypoint of ordinary quality at each place the person stood, triangulate it
 /// through the solved cameras, and report how well it comes out.
-fn precision(cameras: &[Camera], sightings: &[Sighting], offsets: &[Vector3<f64>]) -> Option<f64> {
+///
+/// `height` decides *which* places. `None` uses the recorded positions as they
+/// are, and those are a headset and two controllers: every sighting in a
+/// calibration walk is above the waist. `Some(y)` uses the point directly below
+/// each one at that height in the room frame, which is the only way the lower
+/// half of the body gets asked about at all.
+///
+/// It has to be asked separately because the answer is not the same, and the
+/// difference is not small. A room reported one centimetre at the heights the
+/// headset visited while every ankle in it came out over ten, which is past the
+/// gate that decides whether a joint is reported at all — so the calibration
+/// panel called the placement excellent for an application whose entire purpose
+/// is the part of the body it had not looked at.
+fn precision_at(
+    cameras: &[Camera],
+    sightings: &[Sighting],
+    offsets: &[Vector3<f64>],
+    height: Option<f64>,
+) -> Option<f64> {
     /// A keypoint neither especially good nor especially bad.
     const NOMINAL: f64 = 0.8;
     /// One in this many sightings is sampled. The answer varies smoothly with
@@ -706,7 +781,10 @@ fn precision(cameras: &[Camera], sightings: &[Sighting], offsets: &[Vector3<f64>
         let Some(offset) = offsets.get(sighting.rig) else {
             continue;
         };
-        let world = sighting.anchor * Point3::from(*offset);
+        let mut world = sighting.anchor * Point3::from(*offset);
+        if let Some(y) = height {
+            world.y = y;
+        }
 
         let observations: Vec<Observation> = cameras
             .iter()
@@ -854,8 +932,8 @@ mod tests {
             camera_at(0.2, 0.6, -1.9),
         ];
 
-        let good = precision(&spread, &walk, &offsets).expect("the walk is visible");
-        let bad = precision(&clustered, &walk, &offsets).expect("the walk is visible");
+        let good = precision_at(&spread, &walk, &offsets, None).expect("the walk is visible");
+        let bad = precision_at(&clustered, &walk, &offsets, None).expect("the walk is visible");
 
         assert!(
             good < 0.02,
@@ -881,6 +959,111 @@ mod tests {
             camera_at(0.0, 1.4, 0.1),
         ];
 
-        assert_eq!(precision(&facing_away, &walk(), &[Vector3::zeros()]), None);
+        assert_eq!(
+            precision_at(&facing_away, &walk(), &[Vector3::zeros()], None),
+            None
+        );
+    }
+
+    /// Asking about the floor is a different question, and a harder one.
+    ///
+    /// Every sane camera placement is above the person, so a point on the floor
+    /// sits nearer the cameras' shared line of sight than a point at head
+    /// height does, and is placed less well. The calibration walk is recorded
+    /// from a headset and two controllers and so never visits the floor, which
+    /// is why it has to be asked about rather than measured.
+    #[test]
+    fn the_floor_is_a_harder_question_than_the_head() {
+        let offsets = [Vector3::zeros()];
+        let walk = walk();
+        let around = [
+            camera_at(2.2, 2.2, 0.0),
+            camera_at(-2.2, 2.2, 0.0),
+            camera_at(0.0, 2.2, 2.2),
+        ];
+
+        let head = precision_at(&around, &walk, &offsets, None).expect("the walk is visible");
+        let foot =
+            precision_at(&around, &walk, &offsets, Some(ANKLE)).expect("the floor is in shot");
+
+        assert!(
+            foot > head,
+            "a foot came out better than a head, which no placement above the user allows: \
+             {foot:.4} m against {head:.4} m"
+        );
+    }
+
+    /// The verdict that matters most, and the one a single figure could not
+    /// express: not that the feet are placed badly but that they are not in
+    /// shot at all. Cameras low and close, aimed at the part of a person a
+    /// webcam is usually aimed at, answer beautifully about a head and have
+    /// nothing whatever to say about a foot.
+    #[test]
+    fn cameras_that_cannot_see_the_floor_say_so_rather_than_reporting_on_the_head() {
+        let offsets = [Vector3::zeros()];
+        let walk = walk();
+        let close = [
+            camera_at(1.03, 1.01, -0.58),
+            camera_at(0.63, 0.78, -0.55),
+            camera_at(-0.01, 1.30, -1.04),
+        ];
+
+        assert!(
+            precision_at(&close, &walk, &offsets, None).is_some(),
+            "the walk itself should still be visible"
+        );
+        assert_eq!(
+            precision_at(&close, &walk, &offsets, Some(ANKLE)),
+            None,
+            "the floor is out of shot, which is not the same as being placed badly"
+        );
+    }
+
+    /// Profiles are TOML on disk, so every variant has to survive the trip --
+    /// including the one that carries no number, which is the case a plain
+    /// `Option<f64>` could not have expressed.
+    #[test]
+    fn a_floor_verdict_survives_being_saved_and_read_back() {
+        let room = |floor| RoomCalibration {
+            cameras: Vec::new(),
+            rigs: Vec::new(),
+            rms: 0.01,
+            rejected: 3,
+            used: 900,
+            precision: Some(0.014),
+            floor_precision: floor,
+            solved_at: "2026-08-26T00:00:00+09:00".to_owned(),
+        };
+
+        for verdict in [
+            Some(FloorPrecision::Metres(0.11)),
+            Some(FloorPrecision::OutOfShot),
+            None,
+        ] {
+            let text = toml::to_string_pretty(&room(verdict)).expect("a profile serialises");
+            let read: RoomCalibration = toml::from_str(&text).expect("and reads back");
+            assert_eq!(
+                read.floor_precision, verdict,
+                "round trip changed {verdict:?}"
+            );
+        }
+    }
+
+    /// A profile written before the floor was asked about reads back as "not
+    /// asked", which is a different thing from "asked, and the floor was not in
+    /// shot". Showing the second for the first would accuse a working room.
+    #[test]
+    fn a_profile_from_before_this_existed_says_nothing_about_the_floor() {
+        let text = "\
+rms = 0.01
+rejected = 0
+used = 900
+precision = 0.014
+solved_at = \"2026-08-01T00:00:00+09:00\"
+cameras = []
+rigs = []
+";
+        let read: RoomCalibration = toml::from_str(text).expect("an old profile still loads");
+        assert_eq!(read.floor_precision, None);
     }
 }

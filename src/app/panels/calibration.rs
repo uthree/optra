@@ -17,7 +17,7 @@ use nalgebra::Point3;
 
 use crate::app::viewer3d::{Scene, Viewer3d};
 use crate::calib::recorder::{Coverage, RecorderConfig, RecorderStats};
-use crate::calib::{RoomCalibration, SolveOptions, solve};
+use crate::calib::{FloorPrecision, RoomCalibration, SolveOptions, solve};
 use crate::vr::{LinkState, Role};
 
 use super::PanelContext;
@@ -604,8 +604,17 @@ fn summary(
     // A different question from the one above, and the one that a user moving
     // cameras around actually needs answered: not how well these cameras were
     // solved, but whether where they are is any good.
+    // Asked at two heights, because the walk that produced the answer happened
+    // entirely above the waist -- a headset and two controllers -- and Optra is
+    // a lower-body tracker. A room can place a head to a centimetre and an
+    // ankle to ten, and it is the second number that says whether the trackers
+    // this application exists to drive will work.
     if let Some(precision) = room.precision {
-        let tight = precision <= GOOD_PRECISION_METRES;
+        let floor = room.floor_precision;
+        // A profile solved before the floor was asked about carries `None`, and
+        // that is the only case where saying nothing about feet is right.
+        let tight = precision <= GOOD_PRECISION_METRES
+            && floor.is_none_or(|floor| floor.is_good(GOOD_PRECISION_METRES));
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Placement").weak());
             ui.colored_label(
@@ -614,8 +623,34 @@ fn summary(
                 } else {
                     Color32::from_rgb(230, 180, 90)
                 },
-                format!("can locate a joint to about {:.0} cm", precision * 100.0),
+                format!("can locate a head to about {:.0} cm", precision * 100.0),
             );
+            match floor {
+                Some(FloorPrecision::Metres(metres)) => {
+                    ui.label(RichText::new("and a foot").weak());
+                    ui.colored_label(
+                        if metres <= GOOD_PRECISION_METRES {
+                            Color32::from_rgb(120, 200, 120)
+                        } else {
+                            Color32::from_rgb(230, 120, 120)
+                        },
+                        format!("to about {:.0} cm", metres * 100.0),
+                    );
+                }
+                // Not a missing number. Two cameras have to see a point before
+                // anything can be said about it, so a floor no pair of them has
+                // in shot means the feet are absent rather than imprecise —
+                // the worse verdict, and one a single figure could not express.
+                Some(FloorPrecision::OutOfShot) => {
+                    ui.colored_label(
+                        Color32::from_rgb(230, 120, 120),
+                        "and cannot see the floor at all",
+                    );
+                }
+                // Solved before this was asked. Saying nothing is honest here
+                // and nowhere else.
+                None => {}
+            }
         });
         if !tight {
             ui.label(
@@ -624,7 +659,9 @@ fn summary(
                      calibration is. Cameras clustered together see a joint from nearly the \
                      same direction and agree with each other about a point none of them can \
                      place. Moving them further apart, and around the user rather than all \
-                     to one side, is what improves it.",
+                     to one side, is what improves it. A foot is the harder of the two: \
+                     cameras mounted low see it along their shared line of sight rather than \
+                     across it, so raising them helps it and barely changes the head.",
                 )
                 .weak(),
             );

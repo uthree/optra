@@ -10,4 +10,4 @@ pub mod solve;
 
 pub use latency::{Estimate, LatencyOptions};
 pub use recorder::{Recorder, RecorderConfig, Recording, Rig};
-pub use solve::{CameraCalibration, RoomCalibration, SolveOptions, solve};
+pub use solve::{CameraCalibration, FloorPrecision, RoomCalibration, SolveOptions, solve};

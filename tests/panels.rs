@@ -168,6 +168,10 @@ fn a_solved_room_lays_out() {
         rejected: 37,
         used: 763,
         precision: Some(0.031),
+        // Ten times the head figure, which is the shape of the real report: a
+        // room that places a head well and a foot badly, and used to say only
+        // the first half of that.
+        floor_precision: Some(optra::calib::FloorPrecision::Metres(0.31)),
         solved_at: "2026-08-25T12:00:00+09:00".to_owned(),
     };
 

@@ -987,6 +987,24 @@ the person stood, triangulated through the solved cameras, and the resulting
 uncertainty reported. That is the number a user moving a tripod needs, and it is
 the residual that would mislead them.
 
+**And it is asked at two heights, because the walk only ever visits one.** A
+calibration walk is recorded from a headset and two controllers, so every point
+in it is above the waist. A figure computed from those describes how well the
+room places a head — which is not what this application is for. The same
+question is asked again at ankle height directly below each recorded position,
+and that is the number that says whether foot trackers will work.
+
+The second answer has a state the first does not need: *not in shot*. Two
+cameras have to see a point before anything can be said about it, and cameras
+low and close, aimed where a webcam is usually aimed, can answer beautifully
+about a head while no pair of them has the floor in frame anywhere along the
+walk. The feet are then not placed badly, they are absent, and the two call for
+different moves — further apart or higher for the first, tilted down for the
+second. Collapsing that into a missing number would also make it
+indistinguishable from a profile solved before the question existed, so it is a
+variant of its own and old profiles say nothing rather than accusing a room
+nobody has measured.
+
 Per-joint angular residuals and uncertainties are retained and surfaced in the
 UI, together with each camera's contribution weight and the cameras that were
 dropped as outliers; this is the single most useful diagnostic when tracking
