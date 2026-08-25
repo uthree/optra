@@ -98,7 +98,7 @@ struct SystemTable {
     get_device_to_absolute_tracking_pose:
         unsafe extern "system" fn(i32, f32, *mut TrackedDevicePose, u32),
     get_seated_zero_pose_to_standing: *const c_void,
-    get_raw_zero_pose_to_standing: *const c_void,
+    get_raw_zero_pose_to_standing: unsafe extern "system" fn() -> HmdMatrix34,
     get_sorted_tracked_device_indices_of_class: *const c_void,
     get_tracked_device_activity_level: *const c_void,
     apply_transform: *const c_void,
@@ -238,6 +238,21 @@ impl Runtime {
         }
 
         poses
+    }
+
+    /// The transform from the standing universe back to the runtime's raw,
+    /// uncalibrated space.
+    ///
+    /// Everything else here works in the standing universe, which is Optra's
+    /// world frame, so nothing internal needs this. What needs it is a driver
+    /// asked to place a device in raw space — it has to be told what the room
+    /// setup did, and this is the only place that knows.
+    ///
+    /// It changes when the user reruns SteamVR's room setup and not otherwise,
+    /// so a caller may read it once per connection.
+    pub fn raw_zero_pose_to_standing(&self) -> HmdMatrix34 {
+        // SAFETY: as above; the call takes no arguments and returns by value.
+        unsafe { ((*self.table).get_raw_zero_pose_to_standing)() }
     }
 
     pub fn device_class(&self, index: u32) -> i32 {

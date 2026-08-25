@@ -27,6 +27,7 @@ pub struct Config {
     pub inference: InferenceConfig,
     pub vr: VrConfig,
     pub fusion: FusionConfig,
+    pub output: OutputConfig,
     /// Room profile to load at startup, by name. The calibration a room needs
     /// belongs to the room rather than to the application, so only its name
     /// lives here.
@@ -239,8 +240,13 @@ pub struct FusionConfig {
     pub min_confidence: f32,
     /// Positional uncertainty past which a joint is withheld, in metres.
     pub max_joint_sigma: f32,
-    /// How far ahead to predict, in milliseconds. This should be the delay from
-    /// a frame being exposed to the consumer showing it.
+    /// How far ahead to predict, in milliseconds.
+    ///
+    /// Only the part of the delay Optra cannot measure: the OSC hop and
+    /// whatever the consumer does before it draws. The larger part — the time
+    /// between the light landing on a sensor and a reconstruction existing —
+    /// is measured by the fusion stage and added to this automatically, so
+    /// there is nothing here to keep in step with the camera setup.
     pub prediction_ms: u32,
     /// Cutoff of the position smoothing at rest, in hertz. Lower is stiller and
     /// slower to respond.
@@ -257,7 +263,7 @@ impl Default for FusionConfig {
             align_slack_ms: 40,
             min_confidence: 0.3,
             max_joint_sigma: 0.10,
-            prediction_ms: 60,
+            prediction_ms: 20,
             smoothing_hz: 1.2,
             measure_body: true,
         }
@@ -321,6 +327,165 @@ impl Default for VrConfig {
             history_seconds: 4.0,
             retry_seconds: 5.0,
             patience_seconds: 5.0,
+        }
+    }
+}
+
+/// Where the trackers go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SinkKind {
+    /// VRChat's own OSC tracker input.
+    VrchatOsc,
+    /// VirtualMotionTracker's virtual SteamVR devices.
+    Vmt,
+}
+
+impl SinkKind {
+    pub const ALL: [SinkKind; 2] = [SinkKind::VrchatOsc, SinkKind::Vmt];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SinkKind::VrchatOsc => "VRChat OSC",
+            SinkKind::Vmt => "SteamVR via VMT",
+        }
+    }
+
+    /// What choosing it means, for a user who has not met either.
+    pub fn description(self) -> &'static str {
+        match self {
+            SinkKind::VrchatOsc => {
+                "Straight into VRChat, no driver to install. Only VRChat sees the trackers."
+            }
+            SinkKind::Vmt => {
+                "Real SteamVR devices, so anything that reads SteamVR sees them. \
+                 Needs VirtualMotionTracker installed."
+            }
+        }
+    }
+}
+
+/// One tracker's settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackerConfig {
+    pub role: crate::output::TrackerRole,
+    pub enabled: bool,
+    /// Offset from the joint to where the tracker should sit, in the tracker's
+    /// own frame and in metres.
+    ///
+    /// A real puck is strapped to the outside of a limb, not to the bone: the
+    /// avatar's proportions are calibrated against wherever the tracker was,
+    /// so being consistently a few centimetres off is harmless and being
+    /// somewhere different every session is not.
+    pub offset: [f32; 3],
+}
+
+/// Settings for the output stage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    pub enabled: bool,
+    pub sink: SinkKind,
+    /// Sends per second.
+    ///
+    /// Higher than the fusion rate on purpose. Each send predicts to a later
+    /// instant from the same reconstruction, so the poses really do advance
+    /// between them, and the consumer's own render loop gets an answer closer
+    /// to the moment it asked.
+    pub rate_hz: u32,
+    pub vrchat_target: String,
+    pub vmt_target: String,
+    /// Tell VMT what SteamVR's room setup is, for this run only.
+    ///
+    /// VMT places devices in the runtime's raw space and keeps its own idea of
+    /// how that relates to the room. Optra can read the true one from OpenVR,
+    /// which saves configuring the same thing twice — but a user who has set
+    /// it themselves may want theirs left alone.
+    pub vmt_send_room_matrix: bool,
+    /// Positional uncertainty past which a tracker is not sent, in metres.
+    pub max_sigma: f32,
+    pub trackers: Vec<TrackerConfig>,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sink: SinkKind::VrchatOsc,
+            rate_hz: 90,
+            vrchat_target: crate::output::vrchat::DEFAULT_TARGET.to_owned(),
+            vmt_target: crate::output::vmt::DEFAULT_TARGET.to_owned(),
+            vmt_send_room_matrix: true,
+            max_sigma: 0.08,
+            trackers: crate::output::TrackerRole::ALL
+                .iter()
+                .map(|role| TrackerConfig {
+                    role: *role,
+                    // Hips and both feet: the three that make full-body
+                    // tracking work, and the three a camera looking at a
+                    // standing person can actually see. The rest are there to
+                    // be turned on by someone who has checked that their room
+                    // supports them.
+                    enabled: role.is_essential(),
+                    offset: [0.0; 3],
+                })
+                .collect(),
+        }
+    }
+}
+
+impl OutputConfig {
+    /// Fills in any role missing from a config written by an older build, so a
+    /// new tracker does not simply fail to appear in the panel.
+    pub fn complete(&mut self) {
+        for role in crate::output::TrackerRole::ALL {
+            if !self.trackers.iter().any(|tracker| tracker.role == role) {
+                self.trackers.push(TrackerConfig {
+                    role,
+                    enabled: false,
+                    offset: [0.0; 3],
+                });
+            }
+        }
+    }
+
+    pub fn enabled_roles(&self) -> Vec<crate::output::TrackerRole> {
+        self.trackers
+            .iter()
+            .filter(|tracker| tracker.enabled)
+            .map(|tracker| tracker.role)
+            .collect()
+    }
+
+    /// Per-role offsets, in metres, for the roles that have one.
+    pub fn offsets(&self) -> Vec<(crate::output::TrackerRole, nalgebra::Vector3<f64>)> {
+        self.trackers
+            .iter()
+            .filter(|tracker| tracker.enabled && tracker.offset != [0.0; 3])
+            .map(|tracker| {
+                (
+                    tracker.role,
+                    nalgebra::Vector3::new(
+                        tracker.offset[0] as f64,
+                        tracker.offset[1] as f64,
+                        tracker.offset[2] as f64,
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    pub fn target(&self) -> &str {
+        match self.sink {
+            SinkKind::VrchatOsc => &self.vrchat_target,
+            SinkKind::Vmt => &self.vmt_target,
+        }
+    }
+
+    pub fn target_mut(&mut self) -> &mut String {
+        match self.sink {
+            SinkKind::VrchatOsc => &mut self.vrchat_target,
+            SinkKind::Vmt => &mut self.vmt_target,
         }
     }
 }

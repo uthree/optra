@@ -22,7 +22,7 @@ use crate::calib::RoomCalibration;
 use crate::config::FusionConfig;
 use crate::geometry::camera::Camera;
 use crate::pipeline::PoseChannel;
-use crate::worker::timing::Ticker;
+use crate::worker::timing::{Rate, Ticker, ema};
 use crate::worker::{Shutdown, Supervisor};
 
 use super::align::align;
@@ -515,34 +515,6 @@ fn warning(stats: &FusionStats, skeleton: &Skeleton, measure: &MeasureOptions) -
     }
 
     None
-}
-
-/// A smoothed count of ticks per second.
-#[derive(Default)]
-struct Rate {
-    last: Option<Instant>,
-    rate: f32,
-}
-
-impl Rate {
-    fn tick(&mut self, now: Instant) -> f32 {
-        if let Some(previous) = self.last.replace(now) {
-            let dt = now.duration_since(previous).as_secs_f32();
-            if dt > 0.0 {
-                self.rate = ema(self.rate, 1.0 / dt);
-            }
-        }
-        self.rate
-    }
-}
-
-fn ema(current: f32, sample: f32) -> f32 {
-    const ALPHA: f32 = 0.05;
-    if current == 0.0 {
-        sample
-    } else {
-        current * (1.0 - ALPHA) + sample * ALPHA
-    }
 }
 
 #[cfg(test)]

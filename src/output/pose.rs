@@ -60,9 +60,11 @@ pub enum TrackerRole {
 impl TrackerRole {
     /// Every role, in the order they are assigned tracker indices.
     ///
-    /// The order is fixed rather than following the enabled set, so that
-    /// turning the chest on does not renumber the feet underneath a consumer
-    /// that had already been calibrated against them.
+    /// Trunk down to the extremities, and left before right within a pair —
+    /// which is also the order they matter in. See [`assign`] for what the
+    /// order is used for.
+    ///
+    /// [`assign`]: super::sink::assign
     pub const ALL: [TrackerRole; 8] = [
         TrackerRole::Hip,
         TrackerRole::Chest,

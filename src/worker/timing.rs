@@ -207,3 +207,44 @@ mod tests {
         assert!(Ticker::new(Duration::ZERO).period >= Duration::from_micros(100));
     }
 }
+
+/// A smoothed count of events per second.
+///
+/// Reported rather than counted over a window, because what a user wants to
+/// know from it is whether a loop is keeping up *now* — and a plain average
+/// over the last second takes a second to admit that it has stopped.
+#[derive(Debug, Default, Clone)]
+pub struct Rate {
+    last: Option<Instant>,
+    rate: f32,
+}
+
+impl Rate {
+    pub fn tick(&mut self, now: Instant) -> f32 {
+        if let Some(previous) = self.last.replace(now) {
+            let dt = now.duration_since(previous).as_secs_f32();
+            if dt > 0.0 {
+                self.rate = ema(self.rate, 1.0 / dt);
+            }
+        }
+        self.rate
+    }
+
+    pub fn get(&self) -> f32 {
+        self.rate
+    }
+}
+
+/// One step of an exponential moving average, seeded by its first sample.
+///
+/// Seeding matters: starting from zero would make every rate and every fraction
+/// in the UI climb slowly out of nothing for the first second, which reads as a
+/// stage struggling to start rather than as a filter warming up.
+pub fn ema(current: f32, sample: f32) -> f32 {
+    const ALPHA: f32 = 0.05;
+    if current == 0.0 {
+        sample
+    } else {
+        current * (1.0 - ALPHA) + sample * ALPHA
+    }
+}

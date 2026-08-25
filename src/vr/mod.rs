@@ -157,6 +157,10 @@ pub struct VrChannel {
     stop: Shutdown,
     stats: Mutex<LinkStats>,
     history: Mutex<VecDeque<Snapshot>>,
+    /// The room setup, standing universe to the runtime's raw space, read
+    /// once per connection. Nothing inside Optra works in raw space; a driver
+    /// being handed a device to place there does.
+    room: Mutex<Option<Isometry3<f64>>>,
     /// How much history to keep, in seconds.
     window: f32,
 }
@@ -167,12 +171,22 @@ impl VrChannel {
             stop: Shutdown::default(),
             stats: Mutex::new(LinkStats::default()),
             history: Mutex::new(VecDeque::new()),
+            room: Mutex::new(None),
             window,
         }
     }
 
     pub fn stats(&self) -> LinkStats {
         self.stats.lock().clone()
+    }
+
+    /// How SteamVR's room setup maps the standing universe onto raw space.
+    ///
+    /// `None` until a connection has been made. It changes only when the user
+    /// reruns room setup, at which point SteamVR restarts and this is read
+    /// again anyway.
+    pub fn standing_to_raw(&self) -> Option<Isometry3<f64>> {
+        *self.room.lock()
     }
 
     /// The most recent snapshot, for the UI.
@@ -435,6 +449,11 @@ fn run(channel: Arc<VrChannel>, config: VrConfig, global: Shutdown) {
                     stats.last_error = None;
                 }
                 tracing::info!(runtime = %runtime.path().display(), "connected to SteamVR");
+
+                // Read once, here: it is fixed for the life of a connection,
+                // and the runtime restarts when room setup changes it.
+                let raw_to_standing = to_isometry(&runtime.raw_zero_pose_to_standing());
+                *channel.room.lock() = Some(raw_to_standing.inverse());
 
                 sample(&channel, &runtime, &config, &global);
 

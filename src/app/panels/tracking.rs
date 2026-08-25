@@ -483,8 +483,9 @@ fn settings(ui: &mut egui::Ui, ctx: &mut PanelContext<'_>) {
         .changed();
     ui.label(
         RichText::new(
-            "How far ahead the trackers are told the body will be. It should match the \
-             delay from a camera exposing a frame to the headset showing it.",
+            "Only the delay Optra cannot see: the hop to the consumer and whatever it does \
+             before drawing. The time from a camera exposing a frame to a body existing is \
+             measured and added on top, so this does not have to track the camera setup.",
         )
         .weak(),
     );
