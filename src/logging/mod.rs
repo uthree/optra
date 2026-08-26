@@ -1,8 +1,11 @@
 //! Logging setup.
 //!
-//! Records go to stderr as usual and, in parallel, into a bounded in-memory
-//! buffer that the log panel renders. Diagnosing a tracking problem means
-//! reading the log while the app is running, not after it exits.
+//! Records go three places: to stderr as usual, into a bounded in-memory
+//! buffer that the log panel renders, and into a rotating file. The buffer is
+//! for a problem happening now and the file is for one that already happened;
+//! see [`mod@file`] for why both are needed.
+
+pub mod file;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -13,8 +16,11 @@ use parking_lot::Mutex;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
+
+use crate::paths;
 
 /// Maximum number of records kept in memory.
 const CAPACITY: usize = 4096;
@@ -50,6 +56,14 @@ impl LogBuffer {
     }
 }
 
+/// Level the file keeps, whatever the panel and stderr are set to.
+///
+/// The file is read by whoever is diagnosing a report weeks later, and debug
+/// records at tracking rates would push the run that matters out of it in
+/// minutes. `OPTRA_LOG` still applies on top: it can quiet the file, not make
+/// it noisier.
+const FILE_LEVEL: LevelFilter = LevelFilter::INFO;
+
 /// Installs the global subscriber and returns the buffer backing the log panel.
 pub fn init() -> LogBuffer {
     let buffer = LogBuffer::default();
@@ -57,11 +71,48 @@ pub fn init() -> LogBuffer {
     let filter =
         EnvFilter::try_from_env("OPTRA_LOG").unwrap_or_else(|_| EnvFilter::new("optra=debug,warn"));
 
+    // Opened before the subscriber exists, so a failure here has nowhere to be
+    // reported yet and is carried out of the block to be logged once there is
+    // somewhere to log it.
+    let opened =
+        paths::logs_dir().and_then(|dir| file::FileLog::open(&dir, file::LIMIT, file::KEEP));
+    let (sink, failure) = match opened {
+        Ok(sink) => (Some(sink), None),
+        Err(error) => (None, Some(error)),
+    };
+    let path = sink.as_ref().map(|sink| sink.path());
+
+    let to_file = sink.map(|sink| {
+        tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_ansi(false)
+            .with_writer(sink)
+            .with_filter(FILE_LEVEL)
+    });
+
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_target(true))
         .with(BufferLayer(buffer.clone()))
+        .with(to_file)
         .init();
+
+    match (path, failure) {
+        // The first line of every run, so that a file picked up later says
+        // which build wrote it and where the rest of the state lives.
+        (Some(path), _) => tracing::info!(
+            version = env!("CARGO_PKG_VERSION"),
+            path = %path.display(),
+            "Optra started; writing this log to a file"
+        ),
+        // Not fatal. The application still runs and the panel still shows
+        // everything; what is lost is being able to diagnose this run after it
+        // ends, which is worth a warning rather than a refusal to start.
+        (None, Some(error)) => tracing::warn!(
+            "no log file, so nothing from this run will be readable after it ends: {error:#}"
+        ),
+        (None, None) => {}
+    }
 
     buffer
 }

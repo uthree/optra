@@ -173,6 +173,7 @@ Measured on the development machine, asking for 125 Hz:
 src/
   main.rs            app entry, thread supervision
   config/            serde types, room profiles, persistence
+  logging/           the panel's buffer and the rotating log file
   app/               egui UI
     panels/          cameras, models, calibration, tracking, output, log
       notice.rs      warnings that are allowed to change, but not quickly
@@ -1733,6 +1734,7 @@ the scroll area the tracking panel wanted 508 px of it.
   re-measure themselves every time a camera was nudged, and would give two
   people sharing a machine one set of legs.
 - `models/` - downloaded ONNX files, `manifest.toml`, `keypoints.toml`.
+- `logs/optra.log` - the current log, with `optra.1.log` and upwards behind it.
 
 Camera identity is keyed on the device path so that USB re-enumeration does not
 silently swap two cameras and invalidate a calibration. When a configured camera
@@ -1751,6 +1753,41 @@ shape of the trade, and it also shows there is no single answer, since two
 simulated bodies in this repository want opposite settings. When a constant is
 exposed for that reason, the panel that exposes it has to show both costs while
 it is moved; otherwise the user is trading one fault for another blind.
+
+### 13.1 A log that outlives the run
+
+Records go to stderr, to a bounded in-memory buffer the log panel renders, and
+to a file. The first two were all there was for a long time, and between them
+they can only ever answer a question asked while the application is still
+running. The buffer holds four thousand records, which during tracking is a
+matter of seconds; stderr goes nowhere at all in a release build, which is a
+GUI subsystem binary with no console attached. So the calibration wizard would
+report a camera solved to a metre out, the user would close the wizard, and the
+only remaining evidence that anything was wrong was that the tracking felt bad
+— with the answer having scrolled past hours earlier.
+
+The file keeps info and above, whatever the panel is set to. `OPTRA_LOG` still
+applies on top of that and can only quiet it: a debug-level file would fill with
+per-frame records and push out the startup, calibration and download lines that
+are the reason to have one.
+
+Rotation is by size — four megabytes live, four rolled files behind it — rather
+than one file per run. One file per run reads far better, and it is the wrong
+choice here for one reason: an application that fails at startup is one the user
+restarts, usually several times before asking anybody, and a per-run scheme
+would have deleted the run that explained the failure by the time the question
+was asked. Rolling on size costs a header line to find the start of the run and
+keeps everything.
+
+The solve reports itself into that file at info level — the room, then a line
+per camera with its position, error, sightings and measured delay. This is the
+one place in the application where the interesting output is produced by a
+window the user then closes, and a room fitted to a camera in the wrong place
+does not fail, it tracks badly, so the question always arrives afterwards.
+
+The log panel has a button that opens the folder. Asking a user to find
+`%APPDATA%` themselves is asking a good half of them to give up, and a log file
+nobody can hand over is not much better than no log file.
 
 ## 14. Measuring accuracy without a room
 

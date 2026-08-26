@@ -539,7 +539,7 @@ pub fn solve(
         .map(|(_, pair)| pair)
         .collect();
 
-    Ok(RoomCalibration {
+    let room = RoomCalibration {
         precision: precision_at(&refined.cameras, &sightings, &refined.offsets, None),
         floor_precision: Some(
             precision_at(&refined.cameras, &sightings, &refined.offsets, Some(ANKLE))
@@ -551,7 +551,45 @@ pub fn solve(
         rejected: refined.rejected,
         used: sightings.len() - refined.rejected,
         solved_at: chrono::Local::now().to_rfc3339(),
-    })
+    };
+
+    report(&room);
+    Ok(room)
+}
+
+/// Writes the solve to the log at a level the log file keeps.
+///
+/// The wizard shows all of this and then the user closes it. Whoever is asked
+/// about the tracking afterwards has no way back to a report that only ever
+/// existed on screen — and a room solved to a camera in the wrong place tracks
+/// badly rather than failing, so the question always arrives long after the
+/// wizard has gone.
+fn report(room: &RoomCalibration) {
+    tracing::info!(
+        cameras = room.cameras.len(),
+        rms_degrees = format!("{:.3}", room.rms_degrees()),
+        used = room.used,
+        rejected = room.rejected,
+        precision_mm = room
+            .precision
+            .map(|metres| format!("{:.0}", metres * 1000.0)),
+        "solved the room"
+    );
+
+    for camera in &room.cameras {
+        let position = camera.camera.position();
+        tracing::info!(
+            camera = %camera.id,
+            at = format!("{:.2}, {:.2}, {:.2}", position.x, position.y, position.z),
+            rms_degrees = format!("{:.3}", camera.rms_degrees()),
+            sightings = camera.sightings,
+            coverage = format!("{:.2}", camera.coverage),
+            range_m = format!("{:.2}", camera.range),
+            feet = format!("{:.2}", camera.feet),
+            latency_ms = camera.latency.map(|estimate| format!("{:.0}", estimate.millis())),
+            "solved a camera"
+        );
+    }
 }
 
 /// Pairs each recorded pixel with where its device was when the frame was

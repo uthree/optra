@@ -8,11 +8,17 @@ use crate::config::LogLevel;
 
 pub struct LogPanel {
     follow: bool,
+    /// Only ever set when opening the log folder failed, which is the one part
+    /// of this panel that cannot report itself through the log.
+    message: Option<String>,
 }
 
 impl Default for LogPanel {
     fn default() -> Self {
-        Self { follow: true }
+        Self {
+            follow: true,
+            message: None,
+        }
     }
 }
 
@@ -31,7 +37,20 @@ impl LogPanel {
             if ui.button("Clear").clicked() {
                 ctx.log.clear();
             }
+            // What is on screen is the last few thousand records, which at
+            // tracking rates is seconds. Everything older is only in the file.
+            if ui
+                .button("Open log folder")
+                .on_hover_text("The log kept on disk, which reaches further back than this view")
+                .clicked()
+            {
+                self.open_folder();
+            }
         });
+
+        if let Some(message) = &self.message {
+            ui.colored_label(level_color(Level::ERROR), message);
+        }
 
         ui.separator();
 
@@ -60,6 +79,13 @@ impl LogPanel {
                     }
                 });
             });
+    }
+
+    fn open_folder(&mut self) {
+        self.message = match crate::paths::logs_dir().and_then(|dir| crate::paths::reveal(&dir)) {
+            Ok(()) => None,
+            Err(error) => Some(format!("could not open the log folder: {error:#}")),
+        };
     }
 }
 

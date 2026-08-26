@@ -329,16 +329,15 @@ been told the healthy value of is not a diagnostic.
   section 14 of [design.md](design.md).
 - Room profile management, multiple named profiles.
 - Startup self-check: cameras present, calibration loaded, models available.
-- **Write the log to a file.** Records currently go to stderr and to a 4096
-  entry ring buffer that the log panel renders, and nothing else. That is
-  enough to watch a problem happening and useless for one that already
-  happened: tracking at sixty hertz flushes the buffer within seconds, so
-  anything the calibration wizard said is gone by the time a user notices the
-  tracking is wrong. Diagnosing this reliably means asking the user to relaunch
-  from a shell with stderr redirected, which is not something an application
-  with a GUI should need. Rotating files under the config directory, the
-  wizard's solve at info level or above, and a way to open the folder from the
-  log panel.
+- **Write the log to a file.** Done. Records went to stderr and to a 4096 entry
+  ring buffer that the log panel renders, and nothing else — enough to watch a
+  problem happening and no use at all for one that already happened, since
+  tracking at sixty hertz flushes the buffer within seconds and a release build
+  has no console for stderr to reach. Info and above now also goes to
+  `logs/optra.log` under the config directory, rolled by size with four files
+  behind it, the solve reports the room and every camera into it, and the log
+  panel opens the folder. See section 13.1 of [design.md](design.md) for why
+  rotation is by size rather than one file per run.
 - Performance pass: allocation reuse in the hot path, preview downscaling,
   optional per-camera inference rate limits.
 - User documentation: camera placement guide, calibration guide,
