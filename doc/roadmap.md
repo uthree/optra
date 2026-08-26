@@ -347,7 +347,11 @@ been told the healthy value of is not a diagnostic.
 - Performance pass: allocation reuse in the hot path, preview downscaling,
   optional per-camera inference rate limits.
 - User documentation: camera placement guide, calibration guide,
-  troubleshooting.
+  troubleshooting. Written, as [cameras.md](cameras.md),
+  [calibration.md](calibration.md) and [troubleshooting.md](troubleshooting.md).
+  Still to do is making them reachable from the application itself, which the
+  "download to working tracking using only the in-app documentation" test below
+  asks for and a file in a repository does not satisfy.
 - Release build configuration and packaging.
 
 **Done when:** a fresh install can be taken from download to working full-body

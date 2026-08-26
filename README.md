@@ -29,6 +29,9 @@ Pose models are downloaded from within the application; none are bundled.
 
 ## Documentation
 
+- [Placing the cameras](doc/cameras.md)
+- [Calibrating a room](doc/calibration.md)
+- [Troubleshooting](doc/troubleshooting.md)
 - [Design](doc/design.md)
 - [Roadmap](doc/roadmap.md)
 
