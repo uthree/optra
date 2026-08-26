@@ -28,9 +28,24 @@ pub struct CameraConfig {
     pub detector_model: Option<String>,
     /// Pose model for this camera, or the shared default when absent.
     pub pose_model: Option<String>,
+    /// Cap on how often this camera's frames are run through the models.
+    ///
+    /// Absent means every frame, which is what a machine with headroom should
+    /// do. It is per camera rather than global because the cameras are not
+    /// equal: the one that sees the legs clearly is worth its full frame rate,
+    /// and the one watching from across the room is the one to slow down when
+    /// the GPU cannot keep up with all of them.
+    pub infer_fps: Option<u32>,
 }
 
 impl CameraConfig {
+    /// The shortest gap between two frames of this camera reaching the models.
+    pub fn infer_period(&self) -> Option<std::time::Duration> {
+        self.infer_fps
+            .filter(|fps| *fps > 0)
+            .map(|fps| std::time::Duration::from_secs_f64(1.0 / fps as f64))
+    }
+
     pub fn control(&self, name: ControlName) -> Option<&ControlSetting> {
         self.controls.iter().find(|setting| setting.name == name)
     }
@@ -152,6 +167,7 @@ impl Default for CameraConfig {
             controls: Vec::new(),
             detector_model: None,
             pose_model: None,
+            infer_fps: None,
         }
     }
 }

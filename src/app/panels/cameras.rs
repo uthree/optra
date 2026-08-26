@@ -444,10 +444,13 @@ impl CamerasPanel {
                             .is_none_or(|preview| preview.seq != frame.seq);
 
                         if stale {
-                            let image = egui::ColorImage::from_rgb(
-                                [frame.width as usize, frame.height as usize],
-                                &frame.rgb,
-                            );
+                            // Downscaled before it is uploaded, not after. A
+                            // 1080p frame is six megabytes, and four cameras
+                            // delivering thirty of those a second is most of a
+                            // gigabyte per second pushed to the GPU to be drawn
+                            // three hundred pixels wide.
+                            let image =
+                                downscaled(&frame, (width * ui.ctx().pixels_per_point()) as usize);
                             match self.previews.get_mut(&id) {
                                 Some(preview) => {
                                     preview.texture.set(image, TextureOptions::LINEAR);
@@ -535,6 +538,58 @@ impl CamerasPanel {
             self.detect_error =
                 Some("Device detection is only implemented for Windows.".to_owned());
         }
+    }
+}
+
+/// Averages the frame down to about `target_width` pixels for the preview.
+///
+/// The factor is a whole number, so every output texel is the mean of an exact
+/// block of input pixels — cheap, and free of the shimmer that dropping pixels
+/// gives a moving image. Averaging rather than sampling also matters for what
+/// the preview is used for: a keypoint drawn over a subsampled frame lands on a
+/// person the user cannot see because their leg fell between two rows.
+///
+/// Never scaled up. A camera already smaller than the space it is drawn in is
+/// uploaded as it is and stretched by the GPU, which is what that hardware is
+/// for.
+fn downscaled(frame: &crate::capture::FrameData, target_width: usize) -> egui::ColorImage {
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+
+    let factor = (width / target_width.max(1)).max(1);
+    if factor == 1 {
+        return egui::ColorImage::from_rgb([width, height], &frame.rgb);
+    }
+
+    let out_width = width / factor;
+    let out_height = height / factor;
+    let mut pixels = Vec::with_capacity(out_width * out_height);
+    let samples = (factor * factor) as u32;
+
+    for out_y in 0..out_height {
+        for out_x in 0..out_width {
+            let mut sum = [0u32; 3];
+            for dy in 0..factor {
+                let row = ((out_y * factor + dy) * width + out_x * factor) * 3;
+                for dx in 0..factor {
+                    let at = row + dx * 3;
+                    sum[0] += frame.rgb[at] as u32;
+                    sum[1] += frame.rgb[at + 1] as u32;
+                    sum[2] += frame.rgb[at + 2] as u32;
+                }
+            }
+            pixels.push(Color32::from_rgb(
+                (sum[0] / samples) as u8,
+                (sum[1] / samples) as u8,
+                (sum[2] / samples) as u8,
+            ));
+        }
+    }
+
+    egui::ColorImage {
+        size: [out_width, out_height],
+        pixels,
+        source_size: egui::Vec2::new(out_width as f32, out_height as f32),
     }
 }
 
@@ -645,6 +700,7 @@ impl CamerasPanel {
                 &ctx.config.inference.pose_model.clone(),
                 &mut ctx.config.cameras[index].pose_model,
             );
+            changed |= Self::rate_limit(ui, index, &mut ctx.config.cameras[index]);
         });
 
         if changed {
@@ -652,6 +708,50 @@ impl CamerasPanel {
             ctx.pipeline
                 .configure(ctx.config.inference.clone(), &ctx.config.cameras);
         }
+    }
+
+    /// Caps how often one camera's frames reach the models.
+    ///
+    /// The lever to pull when the GPU cannot keep up with every camera at full
+    /// rate. It is per camera because the cameras are not equal — the one with
+    /// a clear view of the legs earns its frames and the one watching from
+    /// across the room is the one to slow down. What it costs is that camera's
+    /// share of the reconstruction: fusion interpolates each camera to the
+    /// shared instant, so a camera limited to 15 Hz contributes like a 15 fps
+    /// camera rather than dropping out.
+    fn rate_limit(ui: &mut egui::Ui, index: usize, camera: &mut CameraConfig) -> bool {
+        // Salted per camera, or two cameras' widgets would share one id and one
+        // drag would move both.
+        ui.push_id(("rate", index), |ui| {
+            let mut changed = false;
+            let mut limited = camera.infer_fps.is_some();
+
+            ui.separator();
+            if ui
+                .checkbox(&mut limited, "Limit inference")
+                .on_hover_text("Run this camera's frames through the models at most this often")
+                .changed()
+            {
+                // Half the camera's own rate is where a user reaching for this
+                // starts, and it is a whole-number share of the frames.
+                camera.infer_fps = limited.then(|| (camera.fps / 2).max(1));
+                changed = true;
+            }
+
+            if let Some(fps) = &mut camera.infer_fps {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(fps)
+                            .speed(1)
+                            .range(1..=240)
+                            .suffix(" Hz"),
+                    )
+                    .changed();
+            }
+
+            changed
+        })
+        .inner
     }
 
     fn override_picker(
@@ -694,5 +794,66 @@ impl CamerasPanel {
             .find(|spec| spec.id == id)
             .map(|spec| spec.name.clone())
             .unwrap_or_else(|| id.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::FrameData;
+
+    /// A frame of vertical stripes: one column black, one column white.
+    fn striped(width: usize, height: usize) -> FrameData {
+        let mut rgb = Vec::with_capacity(width * height * 3);
+        for _ in 0..height {
+            for x in 0..width {
+                let value = if x % 2 == 0 { 0 } else { 255 };
+                rgb.extend_from_slice(&[value; 3]);
+            }
+        }
+        FrameData {
+            width: width as u32,
+            height: height as u32,
+            rgb,
+            captured_at: Instant::now(),
+            seq: 0,
+        }
+    }
+
+    #[test]
+    fn a_frame_no_bigger_than_its_slot_is_left_alone() {
+        let frame = striped(320, 240);
+        let image = downscaled(&frame, 640);
+
+        // Scaling up on the CPU and uploading the result would spend memory
+        // bandwidth to hand the GPU something it can do for free.
+        assert_eq!(image.size, [320, 240]);
+    }
+
+    #[test]
+    fn the_result_is_never_smaller_than_it_is_drawn() {
+        let frame = striped(1920, 1080);
+        let image = downscaled(&frame, 300);
+
+        assert!(
+            image.size[0] >= 300,
+            "a preview scaled below its own slot would be drawn blurred: {:?}",
+            image.size
+        );
+        // Whole-number factor, so the aspect ratio survives.
+        assert_eq!(image.size, [320, 180]);
+    }
+
+    #[test]
+    fn blocks_are_averaged_rather_than_sampled() {
+        let frame = striped(640, 480);
+        let image = downscaled(&frame, 320);
+
+        // Half the pixels are black and half white, so every output texel is
+        // mid grey. Dropping pixels instead would give a preview that is
+        // entirely one or the other, and would shimmer as the subject moves.
+        for pixel in &image.pixels {
+            assert_eq!(pixel.r(), 127, "expected an average, got {pixel:?}");
+        }
     }
 }

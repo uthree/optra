@@ -344,8 +344,12 @@ been told the healthy value of is not a diagnostic.
   behind it, the solve reports the room and every camera into it, and the log
   panel opens the folder. See section 13.2 of [design.md](design.md) for why
   rotation is by size rather than one file per run.
-- Performance pass: allocation reuse in the hot path, preview downscaling,
-  optional per-camera inference rate limits.
+- Performance pass: preview downscaling and optional per-camera inference rate
+  limits, both done; see sections 7.5 and 12 of [design.md](design.md).
+  Allocation reuse in the hot path is deliberately not done: the preprocessing
+  buffers are written in full, so only the zeroing is wasted, and reusing them
+  means taking the buffer back out of the tensor it was handed to — several
+  signatures changed for a saving nothing has measured.
 - User documentation: camera placement guide, calibration guide,
   troubleshooting. Written, as [cameras.md](cameras.md),
   [calibration.md](calibration.md) and [troubleshooting.md](troubleshooting.md).

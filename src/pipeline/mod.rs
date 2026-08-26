@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;
 
-use crate::capture::{CameraChannel, Frame};
+use crate::capture::{CameraChannel, Frame, FrameData};
 use crate::config::{CameraConfig, InferenceConfig};
 use crate::infer::Backend;
 use crate::infer::traits::{Detection, ImageView, Keypoints2d};
@@ -307,6 +307,26 @@ struct CameraState {
     box_hint: Option<Detection>,
     /// Sequence number of the last frame processed.
     last_seq: u64,
+    /// When the last frame that reached the models was captured.
+    last_inference: Option<Instant>,
+}
+
+/// Whether this frame is due to be run through the models, or falls inside a
+/// rate limit the user put on this camera.
+///
+/// Measured from when the frames were *captured* rather than from when this
+/// loop got to them, so that a moment of processing jitter does not spend the
+/// next frame's budget. The frame is dropped rather than deferred: it is
+/// already the newest one the camera has, and holding it would only make the
+/// keypoints older than they need to be.
+fn due(state: &CameraState, camera: &CameraConfig, frame: &FrameData) -> bool {
+    let Some(period) = camera.infer_period() else {
+        return true;
+    };
+    let Some(last) = state.last_inference else {
+        return true;
+    };
+    frame.captured_at.duration_since(last) >= period
 }
 
 fn run(mut worker: Worker) {
@@ -350,6 +370,13 @@ fn run(mut worker: Worker) {
                 continue;
             }
             state.last_seq = frame.seq;
+
+            // Skipped before `worked` is set, so a rate-limited camera lets the
+            // loop sleep rather than spinning through frames it is discarding.
+            if !due(state, camera, &frame) {
+                continue;
+            }
+            state.last_inference = Some(frame.captured_at);
             worked = true;
 
             let detector_id = camera
@@ -809,6 +836,55 @@ mod tests {
             "the box should have been carried, got {seen:?}"
         );
         assert_eq!(detector_calls(&set), 1, "the stride should still hold");
+    }
+
+    /// A camera delivering `fps` frames, run past a rate limit of `limit`.
+    ///
+    /// Returns how many of them the models would have been asked about.
+    fn frames_reaching_the_models(fps: u32, limit: Option<u32>, count: u32) -> u32 {
+        let camera = CameraConfig {
+            fps,
+            infer_fps: limit,
+            ..CameraConfig::default()
+        };
+        let start = Instant::now();
+        let mut state = super::CameraState::default();
+        let mut ran = 0;
+
+        for index in 0..count {
+            let mut frame = camera_frame(index as u64);
+            Arc::get_mut(&mut frame).unwrap().captured_at =
+                start + Duration::from_secs_f64(index as f64 / fps as f64);
+
+            if due(&state, &camera, &frame) {
+                state.last_inference = Some(frame.captured_at);
+                ran += 1;
+            }
+        }
+        ran
+    }
+
+    #[test]
+    fn without_a_limit_every_frame_reaches_the_models() {
+        assert_eq!(frames_reaching_the_models(30, None, 30), 30);
+    }
+
+    /// The point of the setting: a camera whose frames cost more than the GPU
+    /// has to spend contributes at a lower rate rather than making every camera
+    /// late.
+    #[test]
+    fn a_limited_camera_runs_at_about_the_rate_it_was_given() {
+        let ran = frames_reaching_the_models(30, Some(10), 30);
+        assert!(
+            (10..=11).contains(&ran),
+            "expected about ten of thirty frames, got {ran}"
+        );
+    }
+
+    /// A limit above what the camera delivers is not a way to lose frames.
+    #[test]
+    fn a_limit_higher_than_the_frame_rate_changes_nothing() {
+        assert_eq!(frames_reaching_the_models(30, Some(60), 30), 30);
     }
 
     fn frame(at: Instant, seq: u64) -> PoseFrame {

@@ -510,6 +510,34 @@ which makes side-by-side comparison in a real room straightforward: run the
 candidate on one camera, keep the incumbent on the others, and read off the
 angular residuals from section 9.2.
 
+### 7.5 When the GPU cannot keep up with all of them
+
+One thread serves every camera in turn, so a machine that cannot run four
+cameras at their full frame rate does not slow one of them down — it makes all
+of them late, and lateness is the fault that hurts most, because a camera the
+fusion clock cannot wait for drops in and out of the reconstruction and moves
+every joint it touches by the disagreement between camera sets.
+
+So the rate limit is per camera and optional. The cameras are not equal: the one
+with a clear view of the legs earns its frames, and the one watching from across
+the room is the one to slow down. What a limit costs is that camera's share of
+the reconstruction rather than its presence in it — the fusion clock
+interpolates each camera onto the shared instant, so a camera held to 15 Hz
+contributes like a 15 fps camera.
+
+It is measured from when frames were *captured*, not from when the loop reached
+them, so a moment of processing jitter cannot spend the next frame's budget. A
+frame that falls inside the limit is dropped rather than deferred: it is already
+the newest frame that camera has, and holding it would only make its keypoints
+older than they need to be.
+
+Not done, and deliberately: reusing the input tensors between frames.
+`letterbox` and `affine_crop` write every element of the buffer they allocate,
+so the only waste is the zeroing, and recovering the buffer afterwards means
+taking it back out of the tensor it was handed to. That is a real change to
+several signatures for a saving nobody has measured, and this project has spent
+enough on things that looked obviously true.
+
 ## 8. Calibration
 
 ### 8.0 The SteamVR link
@@ -1619,6 +1647,14 @@ they came out, with the recorded walk drawn through them, says whether they
 agree with the *room*. A calibration can be internally consistent and still
 have a camera on the wrong side of the floor, and that is visible in a second
 and invisible in a number.
+
+The previews are downscaled on the way to the GPU rather than after it. A 1080p
+frame is six megabytes, and four cameras delivering thirty of those a second is
+most of a gigabyte per second uploaded to be drawn three hundred pixels wide.
+The factor is a whole number and the block is averaged rather than sampled:
+dropping pixels would shimmer as the subject moves, and would let a leg fall
+between two rows of a preview whose whole purpose is to show what the model is
+looking at.
 
 ### 12.1 What the wizard refuses
 
