@@ -329,6 +329,12 @@ been told the healthy value of is not a diagnostic.
   section 14 of [design.md](design.md).
 - Room profile management, multiple named profiles.
 - Startup self-check: cameras present, calibration loaded, models available.
+  Done, as a banner over whichever panel was last open, re-runnable without a
+  restart and also written to the log. Two of its three questions have an answer
+  the user cannot reach on their own: a missing camera is a symbolic link nobody
+  recognises, and a camera the room profile does not include looks perfectly
+  healthy from the Cameras panel while contributing nothing. See section 13.1 of
+  [design.md](design.md).
 - **Write the log to a file.** Done. Records went to stderr and to a 4096 entry
   ring buffer that the log panel renders, and nothing else — enough to watch a
   problem happening and no use at all for one that already happened, since
@@ -336,7 +342,7 @@ been told the healthy value of is not a diagnostic.
   has no console for stderr to reach. Info and above now also goes to
   `logs/optra.log` under the config directory, rolled by size with four files
   behind it, the solve reports the room and every camera into it, and the log
-  panel opens the folder. See section 13.1 of [design.md](design.md) for why
+  panel opens the folder. See section 13.2 of [design.md](design.md) for why
   rotation is by size rather than one file per run.
 - Performance pass: allocation reuse in the hot path, preview downscaling,
   optional per-camera inference rate limits.

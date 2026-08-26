@@ -15,6 +15,7 @@ use crate::fusion::stage::Fusion;
 use crate::logging::LogBuffer;
 use crate::output::stage::Output;
 use crate::pipeline::Pipeline;
+use crate::startup;
 use crate::vr::VrLink;
 use crate::worker::{Supervisor, WorkerEvent};
 use panels::{Panel, PanelContext};
@@ -65,6 +66,10 @@ pub struct OptraApp {
     dirty_since: Option<Instant>,
     /// Workers that died unexpectedly, shown as a banner until dismissed.
     failures: Vec<String>,
+    /// What the startup check found, until the user dismisses it. Cleared
+    /// rather than kept, because a check that stays on screen after it has been
+    /// read is a check people learn to look past.
+    startup: Option<startup::Report>,
 }
 
 impl OptraApp {
@@ -86,6 +91,13 @@ impl OptraApp {
                     None
                 }
             });
+
+        // Before anything is started, so that the report describes what the
+        // user set up rather than what the last few seconds did to it. It goes
+        // to the log either way: a user who dismisses the banner and asks about
+        // it a week later still has the answer.
+        let startup = startup::Report::gather(&config, room.as_ref());
+        startup.log();
 
         vr.start(&config.vr, &mut supervisor);
 
@@ -125,6 +137,7 @@ impl OptraApp {
             log_panel: Default::default(),
             dirty_since: None,
             failures: Vec::new(),
+            startup: (!startup.is_clear()).then_some(startup),
         }
     }
 
@@ -379,6 +392,26 @@ impl OptraApp {
         panel_ctx.dirty
     }
 
+    /// What the startup check found, above whichever panel the user last had
+    /// open.
+    ///
+    /// It has to be here rather than on a panel of its own, because the whole
+    /// point is to be seen by somebody who does not yet know which panel to
+    /// look at.
+    fn startup_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(report) = &self.startup else { return };
+
+        match startup_banner_ui(ui, report) {
+            BannerAction::None => {}
+            BannerAction::Dismiss => self.startup = None,
+            BannerAction::Recheck => {
+                let report = startup::Report::gather(&self.config, self.room.as_ref());
+                report.log();
+                self.startup = (!report.is_clear()).then_some(report);
+            }
+        }
+    }
+
     fn failure_banner(&mut self, ui: &mut egui::Ui) {
         if self.failures.is_empty() {
             return;
@@ -404,6 +437,66 @@ impl OptraApp {
     }
 }
 
+/// What the user did with the startup banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BannerAction {
+    None,
+    Dismiss,
+    Recheck,
+}
+
+/// Draws the startup report as a banner and reports what was clicked.
+///
+/// A free function rather than a method so that it can be laid out in a test
+/// without an application around it. It is drawn only when something is wrong,
+/// which is exactly the kind of UI that goes years without anybody seeing it
+/// and then fails in front of the one user who needed it.
+pub fn startup_banner_ui(ui: &mut egui::Ui, report: &startup::Report) -> BannerAction {
+    let mut action = BannerAction::None;
+
+    egui::Panel::top("startup").show(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let (colour, headline) = match report.verdict() {
+                startup::Verdict::Blocked => (
+                    egui::Color32::from_rgb(240, 100, 100),
+                    "Tracking cannot start yet:",
+                ),
+                _ => (
+                    egui::Color32::from_rgb(230, 180, 80),
+                    "Tracking will run, with this worth a look:",
+                ),
+            };
+            ui.label(RichText::new(headline).color(colour).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Dismiss").clicked() {
+                    action = BannerAction::Dismiss;
+                }
+                // Everything here is something the user can fix without
+                // restarting — plug the camera back in, install the model — so
+                // the check has to be repeatable without one.
+                if ui.button("Check again").clicked() {
+                    action = BannerAction::Recheck;
+                }
+            });
+        });
+
+        for check in report.problems() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(check.title).strong());
+                ui.label(&check.detail);
+                if let Some(fix) = check.fix {
+                    ui.label(RichText::new(fix).weak());
+                }
+            });
+        }
+        ui.add_space(4.0);
+    });
+
+    action
+}
+
 impl eframe::App for OptraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_worker_events();
@@ -414,6 +507,7 @@ impl eframe::App for OptraApp {
         self.nav(ui);
         self.status_bar(ui);
         self.failure_banner(ui);
+        self.startup_banner(ui);
 
         let panel = self.config.ui.panel;
         let mut dirty = false;

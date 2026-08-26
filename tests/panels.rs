@@ -616,3 +616,36 @@ fn a_config_missing_a_tracker_gains_it() {
     // Added, not enabled: turning a tracker on is the user's decision.
     assert!(config.enabled_roles().is_empty());
 }
+
+/// The startup banner, which is drawn only when something is wrong and so is
+/// the least-exercised piece of UI in the application.
+#[test]
+fn the_startup_banner_lays_out() {
+    use optra::app::{BannerAction, startup_banner_ui};
+    use optra::startup;
+
+    // A machine with nothing set up, which produces one of every verdict the
+    // banner has a colour for.
+    let empty = Config::default();
+    let report = startup::Report {
+        checks: vec![
+            startup::cameras(&empty, Some(&[])),
+            startup::room_profile(&empty, None),
+            startup::models(&empty, None, &|_| false),
+        ],
+    };
+    assert!(
+        !report.is_clear(),
+        "this config is meant to fail its checks"
+    );
+
+    let ctx = egui::Context::default();
+    for _ in 0..2 {
+        let mut drawn = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                assert_eq!(startup_banner_ui(ui, &report), BannerAction::None);
+            });
+        });
+        drawn.textures_delta.clear();
+    }
+}

@@ -1754,7 +1754,36 @@ simulated bodies in this repository want opposite settings. When a constant is
 exposed for that reason, the panel that exposes it has to show both costs while
 it is moved; otherwise the user is trading one fault for another blind.
 
-### 13.1 A log that outlives the run
+### 13.1 The check at startup
+
+Everything tracking needs is spread over four panels, and each of them reports
+its own part perfectly well. None of them can say whether the whole thing is
+ready, so the failure a user actually meets is not an error message: it is a
+Tracking panel sitting there doing nothing, with the reason one panel away and
+nothing to say which one. Three questions cover almost all of it — are the
+configured cameras still attached, are the models they are set to run on disk,
+and does the room profile describe this set of cameras.
+
+Two of those have an answer the user could not work out for themselves. A
+camera is identified by a Media Foundation symbolic link, which nobody
+recognises as the webcam they moved to another port, so a missing camera is
+reported by the name it was enumerated under. And a camera the room profile has
+never heard of looks *fine* from the Cameras panel — it streams, it finds a
+person, and none of that reaches the reconstruction, because nothing knows
+where it is looking from.
+
+The check distinguishes three verdicts, and the distinction that matters is
+between "not attached" and "could not be asked". Enumeration failing is not the
+same as an empty device list, and reporting it as one would send a user to
+check cables that are fine. That case is a warning that says so.
+
+It is a banner rather than a panel, because the point is to be read by somebody
+who does not yet know which panel to open, and it can be re-run from the banner:
+everything it reports — plug the camera back in, install the model, enable the
+camera — is fixable without restarting. It also goes into the log, so a user who
+dismisses it and asks about the tracking a week later still has the answer.
+
+### 13.2 A log that outlives the run
 
 Records go to stderr, to a bounded in-memory buffer the log panel renders, and
 to a file. The first two were all there was for a long time, and between them
