@@ -25,7 +25,9 @@ Not yet released. To build from source:
 cargo build --release
 ```
 
-Pose models are downloaded from within the application; none are bundled.
+`DirectML.dll` is placed beside the executable by the build and has to travel
+with it. Pose models are downloaded from within the application; none are
+bundled.
 
 ## Documentation
 

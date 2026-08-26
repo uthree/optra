@@ -352,7 +352,12 @@ been told the healthy value of is not a diagnostic.
   Still to do is making them reachable from the application itself, which the
   "download to working tracking using only the in-app documentation" test below
   asks for and a file in a repository does not satisfy.
-- Release build configuration and packaging.
+- Release build configuration and packaging. Done: thin LTO and one codegen
+  unit, unwinding kept because the supervisor turns a worker panic into a
+  message the user can read, and a tagged build that zips the executable,
+  `DirectML.dll` — the one runtime library not linked into the binary — and the
+  three guides. Running the workflow by hand builds the same package without
+  spending a version number on it.
 
 **Done when:** a fresh install can be taken from download to working full-body
 tracking using only the in-app documentation.

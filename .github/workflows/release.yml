@@ -1,0 +1,82 @@
+# Builds the shipped package: the executable, the one runtime library that is
+# not linked into it, and the guides a first install needs.
+#
+# Push a tag to publish. Running it by hand builds and uploads the same package
+# as a workflow artifact without creating a release, which is how a packaging
+# change gets checked without spending a version number on it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+
+          # A tag that disagrees with the manifest ships a binary whose About
+          # box contradicts its own download link, and the version is what a
+          # user quotes in a report.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            if [[ "$tag" != "v$version" ]]; then
+              echo "tag $tag does not match the version $version in Cargo.toml" >&2
+              exit 1
+            fi
+          fi
+
+          name="optra-$version-windows-x64"
+          mkdir -p "dist/$name/doc"
+          cp target/release/optra.exe "dist/$name/"
+          # ONNX Runtime is linked into the binary; DirectML is not, and without
+          # it the application starts and then fails to build a session on the
+          # GPU, which reads as a driver problem rather than a missing file.
+          cp target/release/DirectML.dll "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
+          cp doc/cameras.md doc/calibration.md doc/troubleshooting.md "dist/$name/doc/"
+
+          (cd dist && 7z a -bso0 "$name.zip" "$name")
+          echo "PACKAGE=dist/$name.zip" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Keep the package whether or not this is a release
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF#refs/tags/}" --generate-notes "$PACKAGE"

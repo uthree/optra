@@ -2,6 +2,23 @@
 name = "optra"
 version = "0.1.0"
 edition = "2024"
+description = "Multi-webcam lower-body tracking for VRChat and SteamVR"
+license = "Apache-2.0"
+repository = "https://github.com/uthree/optra"
+
+[profile.release]
+# The hot path runs per camera per frame and the solve runs Levenberg-Marquardt
+# over a few hundred sightings, so the codegen settings are worth their build
+# time here.
+lto = "thin"
+codegen-units = 1
+
+# Deliberately left as unwind. The supervisor catches a worker thread's panic,
+# names the thread and puts the message in front of the user; `panic = "abort"`
+# would trade that for a process that vanishes mid-session with nothing written
+# down. Symbols are kept for the same reason.
+panic = "unwind"
+strip = false
 
 [dependencies]
 anyhow = "1.0.104"
