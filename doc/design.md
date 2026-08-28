@@ -175,7 +175,7 @@ src/
   config/            serde types, room profiles, persistence
   logging/           the panel's buffer and the rotating log file
   app/               egui UI
-    panels/          cameras, models, calibration, tracking, output, log
+    panels/          cameras, models, calibration, tracking, output, guide, log
       notice.rs      warnings that are allowed to change, but not quickly
     viewer3d.rs      skeleton / frusta / play-space renderer
   capture/           capture threads, mailboxes, per-camera statistics
@@ -1620,7 +1620,7 @@ forward pointing the right way.
 
 ## 12. User interface
 
-Six panels in a single window:
+Seven panels in a single window:
 
 1. **Cameras** - device enumeration, format/FPS selection, live preview grid
    with keypoint overlay, measured FPS, dropped-frame count, latency estimate.
@@ -1633,7 +1633,16 @@ Six panels in a single window:
    floor grid), per-joint confidence and reprojection residual.
 5. **Output** - sink selection and configuration, tracker enable list, offsets,
    prediction horizon, send rate.
-6. **Log** - `tracing` output with level filtering.
+6. **Guide** - the three user guides from `doc/`, compiled into the binary and
+   rendered in place. The release criterion is a fresh install taken to working
+   tracking using only what the application provides, and a markdown file in a
+   repository is not that: the person mid-setup has the app open and no reason
+   to know the repository exists. Compiling them in also means they cannot be
+   lost from a moved install or go stale against the binary they describe. The
+   guides link to each other by file name; a click on one of those is caught
+   and switches the tab instead of being handed to the OS as a URL it cannot
+   open.
+7. **Log** - `tracing` output with level filtering.
 
 The 3D viewport is drawn with `egui`'s painter; the scene is a few hundred line
 segments, so a full wgpu render pass would be more machinery than that is

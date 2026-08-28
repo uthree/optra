@@ -60,6 +60,7 @@ pub struct OptraApp {
     calibration: panels::calibration::CalibrationPanel,
     tracking: panels::tracking::TrackingPanel,
     output_panel: panels::output::OutputPanel,
+    guide: panels::guide::GuidePanel,
     log_panel: panels::log::LogPanel,
 
     /// Set when the config changed; cleared once it has been written.
@@ -134,6 +135,7 @@ impl OptraApp {
             calibration: Default::default(),
             tracking: Default::default(),
             output_panel: Default::default(),
+            guide: Default::default(),
             log_panel: Default::default(),
             dirty_since: None,
             failures: Vec::new(),
@@ -386,6 +388,7 @@ impl OptraApp {
             Panel::Calibration => self.calibration.ui(ui, &mut panel_ctx),
             Panel::Tracking => self.tracking.ui(ui, &mut panel_ctx),
             Panel::Output => self.output_panel.ui(ui, &mut panel_ctx),
+            Panel::Guide => self.guide.ui(ui, &mut panel_ctx),
             Panel::Log => self.log_panel.ui(ui, &mut panel_ctx),
         }
 

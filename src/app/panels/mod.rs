@@ -2,6 +2,7 @@
 
 pub mod calibration;
 pub mod cameras;
+pub mod guide;
 pub mod log;
 pub mod models;
 pub mod notice;
@@ -26,16 +27,18 @@ pub enum Panel {
     Calibration,
     Tracking,
     Output,
+    Guide,
     Log,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 6] = [
+    pub const ALL: [Panel; 7] = [
         Panel::Cameras,
         Panel::Models,
         Panel::Calibration,
         Panel::Tracking,
         Panel::Output,
+        Panel::Guide,
         Panel::Log,
     ];
 
@@ -46,6 +49,7 @@ impl Panel {
             Panel::Calibration => "Calibration",
             Panel::Tracking => "Tracking",
             Panel::Output => "Output",
+            Panel::Guide => "Guide",
             Panel::Log => "Log",
         }
     }
@@ -62,7 +66,10 @@ impl Panel {
     /// well would nest one scroll area inside another, and the wheel would then
     /// belong to whichever the pointer happened to be over.
     pub fn scrolls(self) -> bool {
-        !matches!(self, Panel::Cameras | Panel::Models | Panel::Log)
+        !matches!(
+            self,
+            Panel::Cameras | Panel::Models | Panel::Guide | Panel::Log
+        )
     }
 
     /// One-line description shown under the panel heading.
@@ -75,6 +82,7 @@ impl Panel {
             Panel::Calibration => "Solve camera intrinsics and extrinsics against the headset.",
             Panel::Tracking => "Watch the reconstructed skeleton and per-joint quality.",
             Panel::Output => "Configure the tracker output backend.",
+            Panel::Guide => "Camera placement, calibration and troubleshooting.",
             Panel::Log => "Application log.",
         }
     }

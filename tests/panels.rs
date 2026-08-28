@@ -9,7 +9,7 @@
 //! asserts is that laying the panel out does not panic.
 
 use optra::app::panels::{Panel, PanelContext};
-use optra::app::panels::{calibration, cameras, log, models, output, tracking};
+use optra::app::panels::{calibration, cameras, guide, log, models, output, tracking};
 use optra::calib::{Recorder, RoomCalibration};
 use optra::capture::CaptureManager;
 use optra::config::{CameraConfig, Config, SourceConfig};
@@ -38,6 +38,7 @@ fn draw_every_panel(config: Config) {
     let mut calibration_panel = calibration::CalibrationPanel::default();
     let mut tracking_panel = tracking::TrackingPanel::default();
     let mut output_panel = output::OutputPanel::default();
+    let mut guide_panel = guide::GuidePanel::default();
     let mut log_panel = log::LogPanel::default();
 
     let ctx = egui::Context::default();
@@ -70,6 +71,7 @@ fn draw_every_panel(config: Config) {
                         Panel::Calibration => calibration_panel.ui(ui, &mut panel_ctx),
                         Panel::Tracking => tracking_panel.ui(ui, &mut panel_ctx),
                         Panel::Output => output_panel.ui(ui, &mut panel_ctx),
+                        Panel::Guide => guide_panel.ui(ui, &mut panel_ctx),
                         Panel::Log => log_panel.ui(ui, &mut panel_ctx),
                     }
                 }
@@ -474,6 +476,7 @@ fn no_panel_spills_out_of_a_short_window() {
     let mut calibration_panel = calibration::CalibrationPanel::default();
     let mut tracking_panel = tracking::TrackingPanel::default();
     let mut output_panel = output::OutputPanel::default();
+    let mut guide_panel = guide::GuidePanel::default();
     let mut log_panel = log::LogPanel::default();
 
     let ctx = egui::Context::default();
@@ -518,6 +521,7 @@ fn no_panel_spills_out_of_a_short_window() {
                         Panel::Calibration => calibration_panel.ui(ui, &mut panel_ctx),
                         Panel::Tracking => tracking_panel.ui(ui, &mut panel_ctx),
                         Panel::Output => output_panel.ui(ui, &mut panel_ctx),
+                        Panel::Guide => guide_panel.ui(ui, &mut panel_ctx),
                         Panel::Log => log_panel.ui(ui, &mut panel_ctx),
                     };
 

@@ -352,10 +352,10 @@ been told the healthy value of is not a diagnostic.
   signatures changed for a saving nothing has measured.
 - User documentation: camera placement guide, calibration guide,
   troubleshooting. Written, as [cameras.md](cameras.md),
-  [calibration.md](calibration.md) and [troubleshooting.md](troubleshooting.md).
-  Still to do is making them reachable from the application itself, which the
-  "download to working tracking using only the in-app documentation" test below
-  asks for and a file in a repository does not satisfy.
+  [calibration.md](calibration.md) and [troubleshooting.md](troubleshooting.md),
+  and compiled into the binary as the Guide panel, which is what the "using only
+  the in-app documentation" test below actually asks for. See section 12 of
+  [design.md](design.md).
 - Release build configuration and packaging. Done: thin LTO and one codegen
   unit, unwinding kept because the supervisor turns a worker panic into a
   message the user can read, and a tagged build that zips the executable,
