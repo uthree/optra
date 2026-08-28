@@ -85,7 +85,10 @@ delivering frames.
 ## Saving and reusing
 
 Give the profile a name and save it. Profiles belong to a camera layout, so keep
-one per room, and pick the one you want at the top of the Calibration panel.
+one per room, and pick the one you want at the top of the Calibration panel. A
+profile for a layout that no longer exists is worth deleting from the same list:
+it is not clutter but a trap, since loading it gives you cameras solved for a
+room that has been dismantled.
 Your measured bone lengths are *not* part of it — a body belongs to a person and
 a profile belongs to a set of cameras — so moving between rooms does not make
 you re-measure yourself.

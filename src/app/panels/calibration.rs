@@ -65,6 +65,9 @@ pub struct CalibrationPanel {
     /// What the recorder is complaining about, held steady while the coverage
     /// tables under it stay put.
     notice: Notice,
+    /// A profile the user has clicked delete on once. The second click on the
+    /// same name is what deletes; a click anywhere else disarms it.
+    confirm_delete: Option<String>,
 }
 
 #[derive(Default)]
@@ -499,16 +502,56 @@ impl CalibrationPanel {
                 ui.label(RichText::new("saved:").weak());
                 for name in saved {
                     if ui.button(&name).clicked() {
+                        self.confirm_delete = None;
                         match RoomCalibration::load(&name) {
                             Ok(room) => {
                                 *ctx.room = Some(room);
-                                ctx.config.room = Some(name);
+                                ctx.config.room = Some(name.clone());
                                 ctx.dirty = true;
                                 self.message = None;
                             }
                             Err(error) => {
                                 self.message = Some(format!("could not load {name}: {error:#}"))
                             }
+                        }
+                    }
+
+                    // Deleting takes two clicks on the same name: profiles are
+                    // an afternoon of walking each, and a confirmation dialog
+                    // is more machinery than one small button arming itself.
+                    let armed = self.confirm_delete.as_deref() == Some(name.as_str());
+                    let label = if armed { "delete?" } else { "\u{2715}" };
+                    if ui
+                        .small_button(RichText::new(label).weak())
+                        .on_hover_text(if armed {
+                            "Click again to delete this profile"
+                        } else {
+                            "Delete this profile"
+                        })
+                        .clicked()
+                    {
+                        if armed {
+                            self.confirm_delete = None;
+                            match RoomCalibration::delete(&name) {
+                                Ok(()) => {
+                                    // Deleting the profile in force also
+                                    // unloads it: keeping a config that names
+                                    // a file that no longer exists would turn
+                                    // the next startup into a failed load.
+                                    if ctx.config.room.as_deref() == Some(name.as_str()) {
+                                        ctx.config.room = None;
+                                        *ctx.room = None;
+                                        ctx.dirty = true;
+                                    }
+                                    self.message = None;
+                                }
+                                Err(error) => {
+                                    self.message =
+                                        Some(format!("could not delete {name}: {error:#}"))
+                                }
+                            }
+                        } else {
+                            self.confirm_delete = Some(name.clone());
                         }
                     }
                 }

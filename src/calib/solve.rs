@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use nalgebra::{Point3, Vector3};
 use serde::{Deserialize, Serialize};
 
@@ -204,6 +204,19 @@ impl RoomCalibration {
     pub fn load(name: &str) -> Result<Self> {
         let path = paths::rooms_dir()?.join(format!("{name}.toml"));
         Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    /// Removes a saved profile.
+    ///
+    /// A profile for a room that no longer exists is not clutter but a trap:
+    /// it stays on the startup check's list of things to load, and a user who
+    /// loads it gets cameras solved for a layout that has been dismantled.
+    pub fn delete(name: &str) -> Result<()> {
+        let path = paths::rooms_dir()?.join(format!("{name}.toml"));
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to delete {}", path.display()))?;
+        tracing::info!(profile = %name, "deleted a room profile");
+        Ok(())
     }
 
     /// Profiles saved on this machine, for the UI to offer.

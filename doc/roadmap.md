@@ -336,7 +336,11 @@ been told the healthy value of is not a diagnostic.
 - A way to measure accuracy without a room, so that a change to a model or to
   the chain can be judged before anyone puts cameras on a ceiling. Done; see
   section 14 of [design.md](design.md).
-- Room profile management, multiple named profiles.
+- Room profile management, multiple named profiles. Done: profiles are saved by
+  name from the wizard, listed and loaded from the Calibration panel with the
+  quality summary of whichever is in force, and deleted with a two-click
+  confirm. Deleting the profile in force also unloads it, so the config cannot
+  be left naming a file that no longer exists.
 - Startup self-check: cameras present, calibration loaded, models available.
   Done, as a banner over whichever panel was last open, re-runnable without a
   restart and also written to the log. Two of its three questions have an answer
