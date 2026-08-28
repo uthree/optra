@@ -12,7 +12,7 @@ these steps build toward.
 | M3 - VR link and calibration | done, pending a room |
 | M4 - Fusion | done, pending a room |
 | M5 - Tracker output | done, pending a consumer |
-| M6 - Tuning and release | in progress |
+| M6 - Tuning and release | built, pending a fresh-install run |
 
 ## M0 - Project skeleton
 
@@ -440,6 +440,13 @@ Six things came out of building it and then reviewing it adversarially:
 What it cannot do is predict a real room. The figure is a rendered
 approximation and real skin, fabric, motion blur and lighting are all absent.
 These numbers are a floor and a regression detector.
+
+Every item in this milestone is now built. What separates "built" from "done"
+is the completion test itself, which no test suite can run: a fresh install on
+a machine this repository has never touched, taken from download to working
+tracking using only the Guide panel. That run is the same one M3 and M4 are
+waiting on — a room with the cameras where they will live — and whatever it
+turns up is the remaining work.
 
 ## Deferred
 
