@@ -544,6 +544,28 @@ taking it back out of the tensor it was handed to. That is a real change to
 several signatures for a saving nobody has measured, and this project has spent
 enough on things that looked obviously true.
 
+### 7.6 What a model costs here
+
+The catalogue can say what a model is good for; it cannot say what it costs on
+the user's machine, because that depends on the GPU, the driver, and whether
+DirectML accepted the graph or the session quietly fell back to the CPU. Those
+are exactly the questions a user choosing between two models is asking, and
+until the Models panel grew a benchmark button the only way to answer them was
+to assign the model and watch the Cameras panel struggle.
+
+The benchmark builds the model through the same adapter the pipeline uses and
+times whole frames of work — preprocessing included — against a fixed synthetic
+image, on a worker thread. It reports four things: the median per-frame cost,
+the worst timed run (frame pacing answers to the worst, not the median), the
+backend the session actually got, and the session build time, which is paid per
+model swap rather than per frame. The first runs are discarded: DirectML
+compiles kernels on the first pass, and charging that to the model would make
+every benchmark mostly measure the driver.
+
+Measured on the development machine: the default pose model builds in 1.4 s and
+runs at 2.2 ms median / 5.5 ms worst on DirectML — the gap between those two
+being exactly why both are shown.
+
 ## 8. Calibration
 
 ### 8.0 The SteamVR link

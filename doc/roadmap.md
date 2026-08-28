@@ -90,13 +90,18 @@ What this milestone found:
 - Only the `mmdet_end2end` and `simcc` adapters were needed for the shipped
   catalogue; the others in the design remain unwritten until a model needs them.
 
-Left for later: a per-model benchmark in the model panel. The UI for
-registering a local ONNX file is done: a form on the Models panel writes the
-entry into the user manifest, with the conventions of the chosen architecture
-filling in everything the form does not ask for, so an unusual export starts
-from a written entry rather than a blank file. The licence gate does not apply
-to a local file — the gate is about what Optra downloads, and a file already
-on the user's disk is theirs.
+Both of the things this milestone left for later are now done:
+
+- A UI for registering a local ONNX file: a form on the Models panel writes the
+  entry into the user manifest, with the conventions of the chosen architecture
+  filling in everything the form does not ask for, so an unusual export starts
+  from a written entry rather than a blank file. The licence gate does not
+  apply to a local file — the gate is about what Optra downloads, and a file
+  already on the user's disk is theirs.
+- A per-model benchmark on the Models panel: whole frames of adapter work timed
+  against a synthetic image, reporting the median, the worst run, the backend
+  the session actually got and the build time. See section 7.6 of
+  [design.md](design.md).
 
 ## M3 - VR link and calibration
 

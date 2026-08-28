@@ -18,8 +18,14 @@ fn the_catalogue_loads_and_every_entry_is_coherent() {
     assert!(!models.is_empty());
 
     for spec in &models {
+        // The licence gate applies to what Optra downloads; an entry the user
+        // registered for a file of their own carries whatever its licence is,
+        // and this test runs against the real user manifest.
         assert!(
-            ["Apache-2.0", "MIT"].contains(&spec.license.as_str()),
+            matches!(
+                spec.source,
+                optra::models::manifest::ModelSource::Local { .. }
+            ) || ["Apache-2.0", "MIT"].contains(&spec.license.as_str()),
             "{} has license {}",
             spec.id,
             spec.license
@@ -110,4 +116,38 @@ fn installs_and_loads_a_real_model() {
         "the manifest declares input {}, but the graph has {inputs:?}",
         spec.input.name
     );
+}
+
+/// Times the default pose model on this machine. Needs the model installed and
+/// a working ONNX runtime, so it is ignored by default:
+///
+/// ```text
+/// cargo test --release --test models -- --ignored benchmark --nocapture
+/// ```
+#[test]
+#[ignore = "requires an installed model"]
+fn the_default_pose_model_benchmarks() {
+    let models = Manifest::load().unwrap();
+    let spec = models
+        .iter()
+        .find(|spec| spec.id == optra::config::InferenceConfig::default().pose_model)
+        .expect("the default pose model is in the catalogue");
+    assert!(
+        store::is_installed(spec),
+        "install {} from the Models panel first",
+        spec.id
+    );
+
+    let result = optra::infer::bench::run(spec, ProviderChoice::default()).unwrap();
+    println!(
+        "{}: {:.1} ms median, {:.1} ms worst, {} (built in {:.0} ms)",
+        spec.id,
+        result.median_ms,
+        result.worst_ms,
+        result.backend.label(),
+        result.build_ms
+    );
+
+    assert!(result.median_ms > 0.0);
+    assert!(result.worst_ms >= result.median_ms);
 }

@@ -21,6 +21,16 @@ pub struct ModelsPanel {
     installs: HashMap<String, Arc<Mutex<Stage>>>,
     /// The form for registering an ONNX file the user already has.
     local: LocalForm,
+    /// Benchmarks that are running or have finished, per model.
+    benchmarks: HashMap<String, Arc<Mutex<BenchState>>>,
+}
+
+/// Where one model's benchmark has got to.
+#[derive(Clone)]
+enum BenchState {
+    Running,
+    Done(crate::infer::bench::Benchmark),
+    Failed(String),
 }
 
 /// What the user has typed into the local-model form so far.
@@ -363,6 +373,21 @@ impl ModelsPanel {
                                     self.installs.remove(&spec.id);
                                 }
                             }
+                            let benching = matches!(
+                                self.benchmarks.get(&spec.id).map(|s| s.lock().clone()),
+                                Some(BenchState::Running)
+                            );
+                            if ui
+                                .add_enabled(!benching, egui::Button::new("Benchmark"))
+                                .on_hover_text(
+                                    "Time this model on this machine. Stop tracking first \
+                                     for a clean number: a benchmark sharing the GPU with \
+                                     four cameras measures the contention, not the model.",
+                                )
+                                .clicked()
+                            {
+                                self.start_benchmark(&spec, ctx.config.inference.provider);
+                            }
                             ui.label(
                                 RichText::new("installed").color(Color32::from_rgb(120, 210, 140)),
                             );
@@ -392,6 +417,39 @@ impl ModelsPanel {
                     ui.label(RichText::new(notes).weak().small());
                 }
 
+                match self.benchmarks.get(&spec.id).map(|s| s.lock().clone()) {
+                    Some(BenchState::Running) => {
+                        ui.label(RichText::new("benchmarking\u{2026}").weak().small());
+                        ui.ctx().request_repaint();
+                    }
+                    Some(BenchState::Done(result)) => {
+                        // The backend is half the answer: a model DirectML
+                        // rejected runs on the CPU, and nothing else in the
+                        // UI would say so.
+                        ui.label(
+                            RichText::new(format!(
+                                "{:.1} ms a frame (\u{2248}{:.0} fps), {:.1} ms at worst, \
+                                 on {} \u{2014} session built in {:.0} ms",
+                                result.median_ms,
+                                result.fps(),
+                                result.worst_ms,
+                                result.backend.label(),
+                                result.build_ms,
+                            ))
+                            .small()
+                            .color(Color32::from_rgb(120, 190, 240)),
+                        );
+                    }
+                    Some(BenchState::Failed(error)) => {
+                        ui.label(
+                            RichText::new(format!("benchmark failed: {error}"))
+                                .small()
+                                .color(Color32::from_rgb(240, 100, 100)),
+                        );
+                    }
+                    None => {}
+                }
+
                 if let Some(stage) = stage
                     && !installed
                 {
@@ -415,6 +473,42 @@ impl ModelsPanel {
         }
 
         let _ = ctx;
+    }
+
+    /// Benchmarks on a worker thread; building a session takes about a second
+    /// before the timing even starts.
+    fn start_benchmark(&mut self, spec: &ModelSpec, provider: ProviderChoice) {
+        let state = Arc::new(Mutex::new(BenchState::Running));
+        self.benchmarks.insert(spec.id.clone(), state.clone());
+
+        let id = spec.id.clone();
+        let spec = spec.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("bench:{}", spec.id))
+            .spawn(move || {
+                let outcome = match crate::infer::bench::run(&spec, provider) {
+                    Ok(result) => {
+                        tracing::info!(
+                            model = %spec.id,
+                            backend = result.backend.label(),
+                            median_ms = format!("{:.1}", result.median_ms),
+                            worst_ms = format!("{:.1}", result.worst_ms),
+                            "benchmarked a model"
+                        );
+                        BenchState::Done(result)
+                    }
+                    Err(error) => {
+                        tracing::warn!("benchmarking {} failed: {error:#}", spec.id);
+                        BenchState::Failed(format!("{error:#}"))
+                    }
+                };
+                *state.lock() = outcome;
+            });
+
+        if let Err(error) = spawned {
+            tracing::error!("could not start the benchmark thread: {error:#}");
+            self.benchmarks.remove(&id);
+        }
     }
 
     /// Installs on a worker thread so a slow download cannot freeze the UI.

@@ -7,6 +7,7 @@
 //! Swapping a model is therefore a configuration change, not a code change.
 
 pub mod arch;
+pub mod bench;
 pub mod preprocess;
 pub mod session;
 pub mod traits;
