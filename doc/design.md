@@ -403,7 +403,13 @@ with a local path and a matching `arch` is enough, with no rebuild.
 
 Models are restricted to Apache-2.0 or MIT upstream licenses, enforced at load
 time. Notably this excludes the YOLOv9-based Wholebody detectors, whose upstream
-is GPL-3.0.
+is GPL-3.0. The gate does not apply to a `local` source: it exists because
+Optra downloads and effectively redistributes the catalogue, and a file the
+user already has on their own disk is theirs, fetched from nowhere. The Models
+panel has a form that registers such a file — it asks for the file, a name, the
+input size and the keypoint layout, and the conventions of the chosen
+architecture fill in the rest of the entry, so an unusual export starts from a
+written user-manifest entry rather than a blank file.
 
 The models were surveyed in
 [PINTO_model_zoo](https://github.com/PINTO0309/PINTO_model_zoo), but they are

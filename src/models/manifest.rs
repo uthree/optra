@@ -244,6 +244,13 @@ const ALLOWED_LICENSES: [&str; 2] = ["Apache-2.0", "MIT"];
 
 impl ModelSpec {
     fn check_license(&self) -> Result<()> {
+        // The gate exists because Optra downloads and effectively redistributes
+        // the catalogue. A file the user already has on their own disk is
+        // theirs, is fetched from nowhere, and its licence is between them and
+        // wherever they got it — so a local entry passes whatever it says.
+        if matches!(self.source, ModelSource::Local { .. }) {
+            return Ok(());
+        }
         if !ALLOWED_LICENSES.contains(&self.license.as_str()) {
             bail!(
                 "its license is {}, and only {} are accepted",
@@ -261,6 +268,145 @@ impl ModelSpec {
             .as_deref()
             .and_then(crate::models::keypoints::layout)
             .map(|layout| layout.count)
+    }
+
+    /// A ready-to-run spec for an ONNX file the user already has.
+    ///
+    /// Everything not asked for is filled from the conventions of the export
+    /// pipeline behind each supported architecture — the mmdeploy SDK detectors
+    /// take BGR letterboxed to grey, the RTMPose SimCC heads take RGB affine
+    /// crops normalised to ImageNet — because those are what a checkpoint of
+    /// that architecture almost certainly is. An unusual export edits the entry
+    /// this writes into the user manifest, which is a far shorter road than
+    /// authoring one from a blank file.
+    pub fn local(
+        kind: ModelKind,
+        path: &str,
+        name: &str,
+        input_name: &str,
+        width: u32,
+        height: u32,
+        keypoints: Option<String>,
+    ) -> ModelSpec {
+        let id = ModelSpec::slug(name);
+        let (arch, input, output, decoder) = match kind {
+            ModelKind::Detector => (
+                "mmdet_end2end",
+                InputSpec {
+                    name: input_name.to_owned(),
+                    width,
+                    height,
+                    color: ColorOrder::Bgr,
+                    mean: [0.0; 3],
+                    std: [1.0; 3],
+                    resize: ResizeMode::Letterbox { pad: 114 },
+                },
+                OutputSpec {
+                    tensors: vec!["dets".to_owned(), "labels".to_owned()],
+                    keypoints: None,
+                },
+                BTreeMap::new(),
+            ),
+            ModelKind::Pose2d => (
+                "simcc",
+                InputSpec {
+                    name: input_name.to_owned(),
+                    width,
+                    height,
+                    color: ColorOrder::Rgb,
+                    mean: [123.675, 116.28, 103.53],
+                    std: [58.395, 57.12, 57.375],
+                    resize: ResizeMode::AffineCrop { padding: 1.25 },
+                },
+                OutputSpec {
+                    tensors: vec!["simcc_x".to_owned(), "simcc_y".to_owned()],
+                    keypoints,
+                },
+                BTreeMap::from([("split_ratio".to_owned(), toml::Value::Float(2.0))]),
+            ),
+        };
+
+        ModelSpec {
+            id,
+            name: name.to_owned(),
+            kind,
+            arch: arch.to_owned(),
+            // Honest, and allowed: the licence gate does not apply to a file
+            // nothing downloaded. See `check_license`.
+            license: "unknown".to_owned(),
+            license_url: String::new(),
+            zoo: None,
+            notes: Some("Registered from a local file.".to_owned()),
+            source: ModelSource::Local {
+                path: path.to_owned(),
+            },
+            input,
+            output,
+            decoder,
+        }
+    }
+
+    /// The id a model registered under `name` gets: what survives of the name
+    /// in lowercase, runs of anything else collapsed to single hyphens.
+    pub fn slug(name: &str) -> String {
+        let mut id = String::with_capacity(name.len());
+        for c in name.chars() {
+            if c.is_ascii_alphanumeric() {
+                id.push(c.to_ascii_lowercase());
+            } else if !id.ends_with('-') && !id.is_empty() {
+                id.push('-');
+            }
+        }
+        id.trim_end_matches('-').to_owned()
+    }
+}
+
+impl Manifest {
+    /// Adds `spec` to the user manifest, creating the file if it is absent.
+    ///
+    /// The entry is appended rather than merged: an id that already exists in
+    /// the user manifest is refused here, because from a form the collision is
+    /// an accident, and the load-time rule that a user entry replaces a builtin
+    /// one is for people editing the file on purpose.
+    pub fn register(spec: ModelSpec) -> Result<()> {
+        let path = paths::models_dir()?.join("manifest.toml");
+        Self::register_at(&path, spec)
+    }
+
+    fn register_at(path: &std::path::Path, spec: ModelSpec) -> Result<()> {
+        let mut manifest = if path.exists() {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            Self::parse(&text, &path.display().to_string())?
+        } else {
+            Manifest {
+                manifest_version: MANIFEST_VERSION,
+                models: Vec::new(),
+            }
+        };
+
+        if manifest.models.iter().any(|entry| entry.id == spec.id) {
+            bail!(
+                "the user manifest already has a model called {}; pick another name",
+                spec.id
+            );
+        }
+
+        let id = spec.id.clone();
+        manifest.models.push(spec);
+        let text = toml::to_string_pretty(&manifest)?;
+
+        // Written beside the target and renamed, as the room profiles are, so
+        // an interrupted write cannot cost the user every model they have
+        // registered so far.
+        let temporary = path.with_extension("toml.tmp");
+        std::fs::write(&temporary, text)
+            .with_context(|| format!("failed to write {}", temporary.display()))?;
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("failed to replace {}", path.display()))?;
+
+        tracing::info!(model = %id, path = %path.display(), "registered a local model");
+        Ok(())
     }
 }
 
@@ -318,5 +464,116 @@ mod tests {
                 .remove(0)
         };
         assert!(spec.check_license().is_err());
+    }
+
+    /// The licence gate is about what Optra downloads. A file already on the
+    /// user's own disk is theirs, and refusing it over a licence string this
+    /// application invented would lock out the one model it never touched.
+    #[test]
+    fn a_local_model_passes_the_licence_gate_whatever_it_says() {
+        let spec = ModelSpec::local(
+            ModelKind::Pose2d,
+            "C:/models/mine.onnx",
+            "My model",
+            "input",
+            192,
+            256,
+            Some("halpe26".to_owned()),
+        );
+        assert_eq!(spec.license, "unknown");
+        assert!(spec.check_license().is_ok());
+    }
+
+    /// The template's whole promise is that the entry runs without hand
+    /// editing, and an arch string no adapter answers to breaks that promise
+    /// at session build, three panels away from where it was typed.
+    #[test]
+    fn local_templates_name_architectures_that_exist() {
+        for (kind, layout) in [
+            (ModelKind::Detector, None),
+            (ModelKind::Pose2d, Some("halpe26".to_owned())),
+        ] {
+            let spec = ModelSpec::local(kind, "a.onnx", "A model", "input", 192, 256, layout);
+            assert!(
+                crate::infer::arch::KNOWN.contains(&spec.arch.as_str()),
+                "{} is not a known architecture",
+                spec.arch
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_becomes_a_usable_id() {
+        assert_eq!(
+            ModelSpec::slug("My RTMPose (fine-tuned) v2!"),
+            "my-rtmpose-fine-tuned-v2"
+        );
+        assert_eq!(ModelSpec::slug("--weird--"), "weird");
+    }
+
+    fn scratch_manifest() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNT: AtomicU32 = AtomicU32::new(0);
+        let unique = COUNT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "optra-manifest-{}-{unique}.toml",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn a_registered_model_survives_the_round_trip() {
+        let path = scratch_manifest();
+        std::fs::remove_file(&path).ok();
+
+        let spec = ModelSpec::local(
+            ModelKind::Pose2d,
+            "C:/models/mine.onnx",
+            "My model",
+            "input",
+            192,
+            256,
+            Some("halpe26".to_owned()),
+        );
+        Manifest::register_at(&path, spec).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let read = Manifest::parse(&text, "test").unwrap();
+        let entry = &read.models[0];
+        assert_eq!(entry.id, "my-model");
+        assert_eq!(entry.arch, "simcc");
+        assert_eq!(entry.output.keypoints.as_deref(), Some("halpe26"));
+        // The decoder settings are the part most easily lost in serialisation,
+        // and a SimCC model without its split ratio decodes to garbage.
+        assert_eq!(
+            entry.decoder.get("split_ratio"),
+            Some(&toml::Value::Float(2.0))
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn registering_the_same_name_twice_is_refused() {
+        let path = scratch_manifest();
+        std::fs::remove_file(&path).ok();
+
+        let spec = ModelSpec::local(
+            ModelKind::Detector,
+            "a.onnx",
+            "Mine",
+            "input",
+            640,
+            640,
+            None,
+        );
+        Manifest::register_at(&path, spec.clone()).unwrap();
+        let refused = Manifest::register_at(&path, spec);
+        assert!(
+            refused.is_err(),
+            "a colliding id from a form is an accident"
+        );
+
+        std::fs::remove_file(&path).ok();
     }
 }

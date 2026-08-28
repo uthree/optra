@@ -19,6 +19,39 @@ pub struct ModelsPanel {
     load_error: Option<String>,
     /// Progress of the installs that are running or have finished.
     installs: HashMap<String, Arc<Mutex<Stage>>>,
+    /// The form for registering an ONNX file the user already has.
+    local: LocalForm,
+}
+
+/// What the user has typed into the local-model form so far.
+struct LocalForm {
+    kind: ModelKind,
+    path: String,
+    name: String,
+    input_name: String,
+    width: u32,
+    height: u32,
+    /// Keypoint layout, for a pose model.
+    layout: String,
+    /// The outcome of the last attempt, and whether it was a success.
+    message: Option<(String, bool)>,
+}
+
+impl Default for LocalForm {
+    fn default() -> Self {
+        Self {
+            kind: ModelKind::Pose2d,
+            path: String::new(),
+            name: String::new(),
+            input_name: "input".to_owned(),
+            // The RTMPose export size, which is what a converted pose
+            // checkpoint most likely is.
+            width: 192,
+            height: 256,
+            layout: "halpe26".to_owned(),
+            message: None,
+        }
+    }
 }
 
 impl ModelsPanel {
@@ -36,8 +69,157 @@ impl ModelsPanel {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                self.local_form(ui);
+                ui.add_space(8.0);
                 self.catalogue_ui(ui, ctx);
             });
+    }
+
+    /// Registers an ONNX file the user already has as a catalogue entry.
+    ///
+    /// The manifest has supported a local source from the start; what was
+    /// missing was a way to write the entry without hand-editing a TOML file
+    /// whose field names live in another repository's documentation. The form
+    /// asks only for what a template cannot guess — the file, a name, the
+    /// input size, and the keypoint layout — and the conventions of the
+    /// architecture fill in the rest. An unusual export edits the entry this
+    /// writes, which is a far shorter road than starting from a blank file.
+    fn local_form(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Register a local ONNX file")
+            .id_salt("local_model")
+            .show(ui, |ui| {
+                let form = &mut self.local;
+
+                ui.horizontal(|ui| {
+                    for kind in [ModelKind::Detector, ModelKind::Pose2d] {
+                        if ui
+                            .selectable_value(&mut form.kind, kind, kind.label())
+                            .clicked()
+                        {
+                            // The size is a property of the checkpoint, but
+                            // each kind has a size its exports overwhelmingly
+                            // use, and a stale one from the other kind is
+                            // wrong for certain rather than probably right.
+                            (form.width, form.height) = match kind {
+                                ModelKind::Detector => (640, 640),
+                                ModelKind::Pose2d => (192, 256),
+                            };
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("ONNX file");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut form.path)
+                            .hint_text("C:\\path\\to\\model.onnx")
+                            .desired_width(360.0),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut form.name)
+                            .hint_text("shown in the pickers; blank uses the file name")
+                            .desired_width(240.0),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Input tensor");
+                    ui.add(egui::TextEdit::singleline(&mut form.input_name).desired_width(100.0));
+                    ui.separator();
+                    ui.label("Input size");
+                    ui.add(egui::DragValue::new(&mut form.width).range(32..=2048));
+                    ui.label("\u{00d7}");
+                    ui.add(egui::DragValue::new(&mut form.height).range(32..=2048));
+                    if form.kind == ModelKind::Pose2d {
+                        ui.separator();
+                        ui.label("Keypoints");
+                        egui::ComboBox::from_id_salt("local_layout")
+                            .selected_text(form.layout.clone())
+                            .show_ui(ui, |ui| {
+                                for name in crate::models::keypoints::names() {
+                                    ui.selectable_value(&mut form.layout, name.to_owned(), name);
+                                }
+                            });
+                    }
+                });
+
+                if ui.button("Register").clicked() {
+                    self.register_local();
+                }
+
+                if let Some((message, good)) = &self.local.message {
+                    let colour = if *good {
+                        Color32::from_rgb(120, 210, 140)
+                    } else {
+                        Color32::from_rgb(240, 100, 100)
+                    };
+                    ui.label(RichText::new(message).color(colour));
+                }
+            });
+    }
+
+    fn register_local(&mut self) {
+        let form = &mut self.local;
+        form.message = Some(match Self::registered(form, &self.catalogue) {
+            Ok(name) => {
+                // Reloaded so the new entry appears in the catalogue and the
+                // pickers without a restart.
+                self.loaded = false;
+                (format!("registered {name}"), true)
+            }
+            Err(error) => (format!("{error:#}"), false),
+        });
+    }
+
+    /// Validates the form and writes the entry. Returns the registered name.
+    fn registered(form: &mut LocalForm, catalogue: &[ModelSpec]) -> anyhow::Result<String> {
+        let path = form.path.trim().to_owned();
+        let file = std::path::Path::new(&path);
+        if !file.is_file() {
+            anyhow::bail!("there is no file at {path}");
+        }
+
+        // The name falls back to the file stem, which is what the user calls
+        // the file already.
+        let name = match form.name.trim() {
+            "" => file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            name => name.to_owned(),
+        };
+        let id = ModelSpec::slug(&name);
+        if id.is_empty() {
+            anyhow::bail!("the name needs at least one letter or digit in it");
+        }
+
+        // Refused against the whole catalogue, not just the user manifest. A
+        // user entry with a builtin id silently replaces the builtin at load,
+        // which is a feature for someone editing the file on purpose and a
+        // trap from a form.
+        if catalogue.iter().any(|spec| spec.id == id) {
+            anyhow::bail!("the catalogue already has a model called {id}; pick another name");
+        }
+
+        let layout = (form.kind == ModelKind::Pose2d).then(|| form.layout.clone());
+        let spec = ModelSpec::local(
+            form.kind,
+            &path,
+            &name,
+            form.input_name.trim(),
+            form.width,
+            form.height,
+            layout,
+        );
+        Manifest::register(spec)?;
+
+        form.path.clear();
+        form.name.clear();
+        Ok(name)
     }
 
     fn ensure_catalogue(&mut self) {
